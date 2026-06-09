@@ -15,7 +15,7 @@ export const GAME_THEMES: GameTheme[] = [
 	{
 		id: "summer-fun",
 		name: "Summer Fun",
-		description: "Sunny summer cards with a bright outdoor background",
+		description: "Summer cards with a beach campsite at sunset",
 		category: "kids",
 		cardPack: "summer-fun",
 		background: "summer-fun",
