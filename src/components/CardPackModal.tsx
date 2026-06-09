@@ -73,6 +73,7 @@ export const CardPackModal = ({
 			"christmas",
 			"dinos",
 			"hotwheels",
+			"summer-fun",
 		].includes(pack.id),
 	);
 
@@ -217,6 +218,21 @@ export const CardPackModal = ({
 		return deck.cards.slice(0, 4);
 	};
 
+	// Get preview images for summer-fun deck
+	const getSummerFunPreview = () => {
+		const deck = CARD_DECKS.find((d) => d.id === "summer-fun");
+		if (!deck) return [];
+		const previewIds = [
+			"beach-ball",
+			"ice-cream-cone",
+			"sandcastle",
+			"watermelon-slice",
+		];
+		return deck.cards
+			.filter((card) => previewIds.includes(card.id))
+			.slice(0, 4);
+	};
+
 	const animalsRealPreview = getAnimalsRealPreview();
 	const oceanRealPreview = getOceanRealPreview();
 	const emotionsRealPreview = getEmotionsRealPreview();
@@ -229,6 +245,7 @@ export const CardPackModal = ({
 	const christmasPreview = getChristmasPreview();
 	const dinosPreview = getDinosPreview();
 	const hotwheelsPreview = getHotwheelsPreview();
+	const summerFunPreview = getSummerFunPreview();
 
 	// Determine which packs to show based on active tab
 	const displayedPacks = activeTab === "emoji" ? emojiPacks : picturePacks;
@@ -550,6 +567,26 @@ export const CardPackModal = ({
 								<div className="mb-4">
 									<div className="w-full h-40 rounded-lg bg-gradient-to-br from-slate-500 to-slate-700 grid grid-cols-2 grid-rows-2 gap-1 p-1">
 										{hotwheelsPreview.map(
+											(card) =>
+												card.imageUrl && (
+													<div
+														key={card.id}
+														className="w-full h-full flex items-center justify-center bg-white bg-opacity-20 rounded overflow-hidden"
+													>
+														<img
+															src={card.imageUrl}
+															alt={card.id}
+															className="max-w-full max-h-full object-contain"
+														/>
+													</div>
+												),
+										)}
+									</div>
+								</div>
+							) : pack.id === "summer-fun" ? (
+								<div className="mb-4">
+									<div className="w-full h-40 rounded-lg bg-gradient-to-br from-sky-300 to-amber-400 grid grid-cols-2 grid-rows-2 gap-1 p-1">
+										{summerFunPreview.map(
 											(card) =>
 												card.imageUrl && (
 													<div

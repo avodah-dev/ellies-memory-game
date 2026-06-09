@@ -12,6 +12,16 @@ export const GAME_THEMES: GameTheme[] = [
 		cardBack: "image",
 		previewEmoji: "🦕",
 	},
+	{
+		id: "summer-fun",
+		name: "Summer Fun",
+		description: "Sunny summer cards with a bright outdoor background",
+		category: "kids",
+		cardPack: "summer-fun",
+		background: "summer-fun",
+		cardBack: "image",
+		previewEmoji: "☀️",
+	},
 
 	// Holiday Themes
 	{

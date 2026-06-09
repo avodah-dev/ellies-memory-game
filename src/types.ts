@@ -47,7 +47,8 @@ export type CardPack =
 	| "thanksgiving"
 	| "christmas"
 	| "dinos"
-	| "hotwheels";
+	| "hotwheels"
+	| "summer-fun";
 
 export interface CardPackOption {
 	id: CardPack;

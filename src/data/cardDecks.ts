@@ -61,6 +61,11 @@ const getHotwheelsImageUrl = (itemId: string): string => {
 	return `/deck-images/hotwheels/${itemId}.jpg`;
 };
 
+// Helper function to get image URL for summer-fun deck
+const getSummerFunImageUrl = (itemId: string): string => {
+	return `/deck-images/summer-fun/${itemId}.jpg`;
+};
+
 export interface CardData {
 	id: string;
 	emoji: string;
@@ -2239,6 +2244,133 @@ export const CARD_DECKS: CardDeck[] = [
 				emoji: "",
 				gradient: "from-slate-400 to-slate-600",
 				imageUrl: getHotwheelsImageUrl("vw-bus"),
+			},
+		],
+	},
+	{
+		id: "summer-fun",
+		name: "Summer Fun",
+		emoji: "☀️",
+		cards: [
+			{
+				id: "beach-ball",
+				emoji: "🏐",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("beach-ball"),
+			},
+			{
+				id: "beach-towel",
+				emoji: "🏖️",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("beach-towel"),
+			},
+			{
+				id: "beach-umbrella",
+				emoji: "⛱️",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("beach-umbrella"),
+			},
+			{
+				id: "bucket-and-shovel",
+				emoji: "🪣",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("bucket-and-shovel"),
+			},
+			{
+				id: "firefly",
+				emoji: "✨",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("firefly"),
+			},
+			{
+				id: "fishing-pole",
+				emoji: "🎣",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("fishing-pole"),
+			},
+			{
+				id: "flip-flops",
+				emoji: "🩴",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("flip-flops"),
+			},
+			{
+				id: "frog",
+				emoji: "🐸",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("frog"),
+			},
+			{
+				id: "ice-cream-cone",
+				emoji: "🍦",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("ice-cream-cone"),
+			},
+			{
+				id: "kite",
+				emoji: "🪁",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("kite"),
+			},
+			{
+				id: "lemonade",
+				emoji: "🍋",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("lemonade"),
+			},
+			{
+				id: "popsicle",
+				emoji: "🍧",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("popsicle"),
+			},
+			{
+				id: "sandcastle",
+				emoji: "🏰",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("sandcastle"),
+			},
+			{
+				id: "seashell",
+				emoji: "🐚",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("seashell"),
+			},
+			{
+				id: "smore",
+				emoji: "🔥",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("smore"),
+			},
+			{
+				id: "sprinkler",
+				emoji: "💦",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("sprinkler"),
+			},
+			{
+				id: "strawberry-basket",
+				emoji: "🍓",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("strawberry-basket"),
+			},
+			{
+				id: "sunflower",
+				emoji: "🌻",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("sunflower"),
+			},
+			{
+				id: "swim-float",
+				emoji: "🛟",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("swim-float"),
+			},
+			{
+				id: "watermelon-slice",
+				emoji: "🍉",
+				gradient: "from-sky-300 to-amber-400",
+				imageUrl: getSummerFunImageUrl("watermelon-slice"),
 			},
 		],
 	},

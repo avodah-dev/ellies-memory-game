@@ -8,6 +8,7 @@ const LOCAL_BACKGROUND_FILES = [
 	"prehistoric-jungle.jpg",
 	"sun-drenched-coral-reef.jpg",
 	"deep-ocean-coral-reef.jpg",
+	"summer-fun.jpg",
 ] as const;
 
 // Extract background IDs from local files (remove extension)
