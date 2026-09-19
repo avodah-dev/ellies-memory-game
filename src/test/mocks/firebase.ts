@@ -164,16 +164,16 @@ export function createMockFirestoreSyncAdapter(
 		}),
 
 		startGame: vi.fn(async (_roomCode: string, initialState: GameState) => {
-			if (state.room) {
-				state.room.status = "playing";
-				state.gameState = createTestOnlineGameState({
-					...initialState,
-					syncVersion: 1,
-					gameRound: 1,
-				});
-				state.roomCallbacks.forEach((cb) => cb(state.room));
-				state.stateCallbacks.forEach((cb) => cb(state.gameState!));
-			}
+			if (!state.room) throw new Error("Not in a room");
+			state.room.status = "playing";
+			state.gameState = createTestOnlineGameState({
+				...initialState,
+				syncVersion: 1,
+				gameRound: (state.gameState?.gameRound ?? 0) + 1,
+			});
+			state.roomCallbacks.forEach((cb) => cb(state.room));
+			state.stateCallbacks.forEach((cb) => cb(state.gameState!));
+			return state.gameState;
 		}),
 
 		// Game state operations

@@ -1,5 +1,34 @@
-import { test, expect, type BrowserContext, type Page } from "@playwright/test";
+import {
+	test as base,
+	expect,
+	type BrowserContext,
+	type Page,
+} from "@playwright/test";
 import ports from "../../local-ports.json" with { type: "json" };
+function watchApplicationErrors(context: BrowserContext, errors: string[]) {
+	const watch = (page: Page) => {
+		page.on("pageerror", (error) => errors.push(error.message));
+		page.on("console", (message) => {
+			// Browser transport/CSP diagnostics have no JavaScript arguments.
+			// Application console.error calls must fail even if the UI recovers.
+			if (message.type() === "error" && message.args().length > 0)
+				errors.push(message.text());
+		});
+	};
+	context.pages().forEach(watch);
+	context.on("page", watch);
+}
+const test = base.extend<{ applicationErrors: string[] }>({
+	applicationErrors: [
+		async ({ context }, use) => {
+			const errors: string[] = [];
+			watchApplicationErrors(context, errors);
+			await use(errors);
+			expect(errors, "Unexpected application errors").toEqual([]);
+		},
+		{ auto: true },
+	],
+});
 async function home(page: Page) {
 	await page.addLocatorHandler(
 		page.getByRole("button", { name: "Got it!", exact: true }),
@@ -68,11 +97,13 @@ for (const transport of ["default", "polling"] as const) {
 	test(`two isolated players synchronize, pause, reconnect and replay (${transport})`, async ({
 		browser,
 		page: host,
+		applicationErrors,
 	}) => {
 		const guestContext = await browser.newContext({
 			baseURL: test.info().project.use.baseURL,
 		});
 		const guest = await guestContext.newPage();
+		watchApplicationErrors(guestContext, applicationErrors);
 		await localRequestsOnly(guestContext);
 		let usedPolling = false;
 		if (transport === "polling") {

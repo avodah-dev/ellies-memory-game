@@ -218,7 +218,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	}
 	async startGame(code: string, state: GameState) {
 		if (!this.isHost) throw new Error("Only host can start game");
-		await runTransaction(this.services.db, async (tx) => {
+		return runTransaction(this.services.db, async (tx) => {
 			const game = doc(this.services.db, "games", code),
 				room = doc(this.services.db, "rooms", code);
 			const previous = await tx.get(game),
@@ -236,6 +236,9 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			});
 			tx.set(game, serializeGame(next));
 			tx.update(room, { status: "playing", lastActivity: serverTimestamp() });
+			// Resolve with this attempt's state only after Firestore commits it.
+			// A separate listener-backed read can still hold the preceding snapshot.
+			return next;
 		});
 	}
 	async getState() {

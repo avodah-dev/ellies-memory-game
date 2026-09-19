@@ -46,6 +46,12 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 					: "choice";
 
 	const [isLoading, setIsLoading] = useState(false);
+	const [isStarting, setIsStarting] = useState(false);
+	const [startedState, setStartedState] = useState<OnlineGameState | null>(
+		null,
+	);
+	const startingRef = useRef(false);
+	const activeLobby = useRef(true);
 	const hasStartedGame = useRef(false);
 	const [playerNameInput, setPlayerNameInput] = useState("");
 
@@ -62,6 +68,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		leaveRoom,
 		subscribeToPresence,
 		clearError,
+		setError,
 		playerName,
 		setPlayerNamePreference,
 		getLastOnlinePreferences,
@@ -73,6 +80,12 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 	}, [playerName]);
 
 	const { settings } = useSettingsStore();
+	useEffect(() => {
+		activeLobby.current = true;
+		return () => {
+			activeLobby.current = false;
+		};
+	}, []);
 
 	// Helper to get images for a card pack
 	const getPackImages = useCallback((packId: CardPack) => {
@@ -86,7 +99,18 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 
 	// Handle starting the game (host only)
 	const handleStartGame = useCallback(async () => {
-		if (!isHost || !room || !roomCode) return;
+		if (
+			!isHost ||
+			!room ||
+			!roomCode ||
+			startingRef.current ||
+			startedState ||
+			hasStartedGame.current
+		)
+			return;
+		startingRef.current = true;
+		setIsStarting(true);
+		clearError();
 
 		try {
 			// Get card images for the selected pack
@@ -107,8 +131,9 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 			const guestPlayer = players.find((p) => p.slot === 2);
 
 			if (!hostPlayer || !guestPlayer) {
-				console.error("Missing players");
-				return;
+				throw new Error(
+					"Both players must be present before starting the game",
+				);
 			}
 
 			// Initialize cards
@@ -130,14 +155,24 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 
 			// Start game via adapter (syncs to Firestore)
 			const adapter = getFirestoreSyncAdapter();
-			await adapter.startGame(roomCode, onlineState);
-
-			// Pass the complete online state so host's refs are initialized correctly
-			const confirmed = await adapter.getState();
-			if (!confirmed) throw new Error("Started game was not found");
-			onGameStart(confirmed);
+			const confirmed = await adapter.startGame(roomCode, onlineState);
+			if (
+				activeLobby.current &&
+				useOnlineStore.getState().roomCode === roomCode
+			) {
+				setStartedState(confirmed);
+			}
 		} catch (error) {
-			console.error("Failed to start game:", error);
+			if (
+				activeLobby.current &&
+				useOnlineStore.getState().roomCode === roomCode
+			)
+				setError(
+					error instanceof Error ? error.message : "Failed to start game",
+				);
+		} finally {
+			startingRef.current = false;
+			if (activeLobby.current) setIsStarting(false);
 		}
 	}, [
 		isHost,
@@ -145,10 +180,27 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		roomCode,
 		settings.cardPack,
 		getPackImages,
-		onGameStart,
+		startedState,
 		presenceData,
 		settings.onlinePairCount,
+		clearError,
+		setError,
 	]);
+
+	// The transaction response and room listener can arrive in either order.
+	// Navigate only after both agree, so the game's waiting-room guard cannot
+	// send the host back while its room snapshot still says "waiting".
+	useEffect(() => {
+		if (
+			isHost &&
+			startedState &&
+			room?.status === "playing" &&
+			!hasStartedGame.current
+		) {
+			hasStartedGame.current = true;
+			onGameStart(startedState);
+		}
+	}, [isHost, startedState, room?.status, onGameStart]);
 
 	// Connect on mount
 	useEffect(() => {
@@ -179,20 +231,32 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		}
 	}, [roomCode, view, currentPath, navigate]);
 
-	// Auto-transition to game when host starts (for guest players)
-	// Game state is now in separate /games/{roomCode} document, so fetch it from adapter
+	// Guests wait for the confirmed game document. The room notification can
+	// arrive before the game listener catches up; an immediate read can be stale.
 	useEffect(() => {
-		if (room?.status === "playing" && !hasStartedGame.current) {
-			hasStartedGame.current = true;
-			// Fetch game state from separate Firestore document
-			const adapter = getFirestoreSyncAdapter();
-			adapter.getState().then((gameState) => {
-				if (gameState) {
-					onGameStart(gameState);
-				}
-			});
-		}
-	}, [room?.status, onGameStart]);
+		if (
+			isHost ||
+			!roomCode ||
+			room?.status !== "playing" ||
+			hasStartedGame.current
+		)
+			return;
+		let active = true;
+		const stop = getFirestoreSyncAdapter().subscribeToState(
+			(gameState) => {
+				if (!active || hasStartedGame.current) return;
+				hasStartedGame.current = true;
+				onGameStart(gameState);
+			},
+			(error) => {
+				if (active) setError(error.message);
+			},
+		);
+		return () => {
+			active = false;
+			stop();
+		};
+	}, [room?.status, roomCode, isHost, onGameStart, setError]);
 
 	const handleCreateRoom = async () => {
 		setIsLoading(true);
@@ -390,6 +454,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 						opponentConnected={opponentConnected}
 						onLeave={handleLeaveRoom}
 						onStartGame={handleStartGame}
+						isStarting={isStarting || startedState !== null}
 					/>
 				) : null;
 

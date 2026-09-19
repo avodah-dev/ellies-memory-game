@@ -3,6 +3,7 @@ import { deleteApp } from "firebase/app";
 import {
 	doc,
 	getDocFromServer,
+	onSnapshot,
 	setDoc,
 	terminate,
 	updateDoc,
@@ -112,6 +113,31 @@ afterEach(async () => {
 	);
 });
 describe("real Firebase adapters and checked-in rules", () => {
+	it("returns the committed start state while an empty-game listener is already active", async () => {
+		const { host, guest, code } = await room();
+		let stop = () => {};
+		await new Promise<void>((resolve, reject) => {
+			stop = onSnapshot(
+				doc(host.c.db, "games", code),
+				{ includeMetadataChanges: true },
+				(snapshot) => {
+					if (!snapshot.metadata.fromCache && !snapshot.exists()) resolve();
+				},
+				reject,
+			);
+		});
+		try {
+			const started = await host.a.startGame(code, initial());
+			expect(started).toMatchObject({
+				gameRound: 1,
+				syncVersion: 1,
+				gameStatus: "playing",
+			});
+			expect(started).toEqual(await guest.a.getState());
+		} finally {
+			stop();
+		}
+	});
 	it("admits only one of two simultaneous guests", async () => {
 		const host = await client(),
 			one = await client(),
@@ -178,7 +204,8 @@ describe("real Firebase adapters and checked-in rules", () => {
 			received.push(s as OnlineGameState),
 		);
 		await host.a.resetRoomToWaiting(code);
-		await host.a.startGame(code, initial());
+		const replay = await host.a.startGame(code, initial());
+		expect(replay).toMatchObject({ gameRound: 2, syncVersion: 1 });
 		await eventually(async () =>
 			received.some((s) => s.gameRound === 2 && s.syncVersion === 1),
 		);

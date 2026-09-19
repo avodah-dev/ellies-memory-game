@@ -359,9 +359,7 @@ export function useAppModel() {
 				const initialState = createInitialState(options.firstPlayer);
 				const nextState = startGameWithCards(initialState, cards);
 
-				await adapter.startGame(roomCode, nextState);
-				const confirmed = await adapter.getState();
-				if (!confirmed) throw new Error("Started game was not found");
+				const confirmed = await adapter.startGame(roomCode, nextState);
 				onlineGame.setFullGameState(confirmed);
 
 				const configUpdates: {

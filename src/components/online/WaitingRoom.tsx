@@ -35,6 +35,7 @@ interface WaitingRoomProps {
 	opponentConnected: boolean;
 	onLeave: () => void;
 	onStartGame: () => void;
+	isStarting: boolean;
 }
 
 export const WaitingRoom = ({
@@ -43,6 +44,7 @@ export const WaitingRoom = ({
 	opponentConnected,
 	onLeave,
 	onStartGame,
+	isStarting,
 }: WaitingRoomProps) => {
 	const [openModal, setOpenModal] = useState<OpenModal>("none");
 	const { updateRoomConfig, getLastOnlinePreferences, presenceData } =
@@ -56,7 +58,7 @@ export const WaitingRoom = ({
 
 	const players = Object.entries(presenceData);
 	const hasOpponent = players.length === 2;
-	const canStart = isHost && hasOpponent && opponentConnected;
+	const canStart = isHost && hasOpponent && opponentConnected && !isStarting;
 
 	// Sort players by slot
 	const sortedPlayers = [...players].sort(([, a], [, b]) => a.slot - b.slot);
@@ -499,7 +501,7 @@ export const WaitingRoom = ({
 								: "bg-gray-200 text-gray-400 cursor-not-allowed"
 						}`}
 					>
-						Start Game
+						{isStarting ? "Starting…" : "Start Game"}
 					</button>
 				)}
 			</div>

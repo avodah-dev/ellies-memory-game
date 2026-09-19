@@ -7,7 +7,13 @@
  * the adapter syncs state to/from Firestore.
  */
 
-import type { CardPack, GameState, Room, RoomConfig } from "../../types";
+import type {
+	CardPack,
+	GameState,
+	OnlineGameState,
+	Room,
+	RoomConfig,
+} from "../../types";
 
 export interface CreateRoomOptions {
 	hostId: string;
@@ -112,9 +118,12 @@ export interface ISyncAdapter {
 	): Promise<void>;
 
 	/**
-	 * Start the game (host only)
+	 * Start the game (host only), returning the committed round and revision.
 	 */
-	startGame?(roomCode: string, initialState: GameState): Promise<void>;
+	startGame?(
+		roomCode: string,
+		initialState: GameState,
+	): Promise<OnlineGameState>;
 }
 
 /**
@@ -144,5 +153,8 @@ export abstract class BaseSyncAdapter implements ISyncAdapter {
 		_roomCode: string,
 		_config: Partial<RoomConfig>,
 	): Promise<void>;
-	startGame?(_roomCode: string, _initialState: GameState): Promise<void>;
+	startGame?(
+		_roomCode: string,
+		_initialState: GameState,
+	): Promise<OnlineGameState>;
 }
