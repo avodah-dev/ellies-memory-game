@@ -35,7 +35,10 @@ export const RoomCodeDisplay = ({
 				title="Click to copy"
 			>
 				<div className="flex items-center gap-3">
-					<span className="text-4xl font-mono font-bold tracking-widest text-gray-800">
+					<span
+						data-testid="room-code"
+						className="text-4xl font-mono font-bold tracking-widest text-gray-800"
+					>
 						{roomCode}
 					</span>
 					<svg

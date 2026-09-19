@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function signedIn(){return request.auth != null;}
+  function room(code){return get(/databases/$(database)/documents/rooms/$(code)).data;}
+  function member(code){return signedIn() && request.auth.uid in room(code).playerSlots;}
+  function validRoom(d){return d.keys().hasOnly(['roomCode','hostId','status','config','playerSlots','createdAt','lastActivity']) && d.status in ['waiting','playing','finished'] && d.playerSlots is map && d.playerSlots.size() >= 1 && d.playerSlots.size() <= 2 && d.playerSlots.values().hasOnly([1,2]) && d.playerSlots[d.hostId] == 1 && d.config.keys().hasOnly(['cardPack','background','cardBack','pairCount']) && d.config.cardPack is string && d.config.background is string && d.config.cardBack is string && d.config.pairCount is int && d.config.pairCount >= 4 && d.config.pairCount <= 20;}
+  match /rooms/{code} {
+   allow get: if signedIn();
+   allow create: if signedIn() && validRoom(request.resource.data) && request.resource.data.hostId == request.auth.uid && request.resource.data.roomCode == code && request.resource.data.playerSlots.size() == 1 && request.resource.data.status == 'waiting';
+   allow update: if signedIn() && validRoom(request.resource.data) && request.resource.data.hostId == resource.data.hostId && request.resource.data.roomCode == code && request.resource.data.createdAt == resource.data.createdAt && (
+    (request.auth.uid == resource.data.hostId && request.resource.data.playerSlots == resource.data.playerSlots) ||
+    (member(code) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActivity'])) ||
+    (request.auth.uid != resource.data.hostId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['playerSlots','lastActivity']) && request.resource.data.playerSlots.diff(resource.data.playerSlots).affectedKeys().hasOnly([request.auth.uid]) && (
+      (!(request.auth.uid in resource.data.playerSlots) && resource.data.status == 'waiting' && resource.data.playerSlots.size() == 1 && request.resource.data.playerSlots[request.auth.uid] == 2) ||
+      (request.auth.uid in resource.data.playerSlots && !(request.auth.uid in request.resource.data.playerSlots))
+    ))
+   );
+  }
+  // The immutable deck is separate from selection and match ownership, allowing
+  // rules to authorize every move without trusting client-computed card flags.
+  function validGame(d) {
+   return d.keys().hasOnly(['cards','currentPlayer','gameStatus','syncVersion','gameRound','lastUpdatedBy','selectedIndexes','matches'])
+    && d.cards is list && d.cards.size() >= 8 && d.cards.size() <= 40 && d.cards.size() % 2 == 0
+    && d.currentPlayer in [1,2] && d.gameStatus in ['playing','finished']
+    && d.syncVersion is int && d.syncVersion > 0 && d.gameRound is int && d.gameRound > 0
+    && d.selectedIndexes is list && d.selectedIndexes.size() <= 2 && d.matches is map;
+  }
+  function freshGame(d) {
+   return d.gameStatus == 'playing' && d.selectedIndexes == [] && d.matches == {};
+  }
+  function legalFlip(before, after) {
+   let added = after.selectedIndexes.removeAll(before.selectedIndexes);
+   let i = added[0];
+   return before.selectedIndexes.size() < 2 && after.selectedIndexes.size() == before.selectedIndexes.size() + 1
+    && after.selectedIndexes.hasAll(before.selectedIndexes) && added.size() == 1
+    && i is int && i >= 0 && i < before.cards.size() && !(string(i) in before.matches)
+    && after.matches == before.matches && after.currentPlayer == before.currentPlayer && after.gameStatus == 'playing';
+  }
+  function legalMatch(before, after) {
+   let i = before.selectedIndexes[0];
+   let j = before.selectedIndexes[1];
+   return before.cards[i].imageId == before.cards[j].imageId
+    && after.matches.diff(before.matches).affectedKeys().hasOnly([string(i),string(j)])
+    && after.matches.size() == before.matches.size() + 2
+    && after.matches[string(i)] == before.currentPlayer && after.matches[string(j)] == before.currentPlayer
+    && after.currentPlayer == before.currentPlayer && after.selectedIndexes == []
+    && after.gameStatus == (after.matches.size() == after.cards.size() ? 'finished' : 'playing');
+  }
+  function legalMove(before, after) {
+   return before.gameStatus == 'playing' && after.cards == before.cards
+    && (after.selectedIndexes.size() > before.selectedIndexes.size() ? legalFlip(before,after) :
+        (after.currentPlayer != before.currentPlayer ?
+         (after.currentPlayer == 3 - before.currentPlayer && after.gameStatus == 'playing' && after.selectedIndexes == [] && after.matches == before.matches) :
+         (before.selectedIndexes.size() == 2 && legalMatch(before,after))));
+  }
+  match /games/{code} {
+   allow get: if member(code);
+   allow create: if member(code) && request.auth.uid == room(code).hostId && validGame(request.resource.data) && freshGame(request.resource.data) && request.resource.data.syncVersion == 1 && request.resource.data.gameRound == 1 && getAfter(/databases/$(database)/documents/rooms/$(code)).data.status == 'playing';
+   allow update: if member(code) && validGame(request.resource.data) && (
+    (request.auth.uid == room(code).hostId && freshGame(request.resource.data) && request.resource.data.gameRound == resource.data.gameRound + 1 && request.resource.data.syncVersion == 1 && getAfter(/databases/$(database)/documents/rooms/$(code)).data.status == 'playing') ||
+    (room(code).status == 'playing' && room(code).playerSlots[request.auth.uid] == resource.data.currentPlayer && request.resource.data.lastUpdatedBy == resource.data.currentPlayer && request.resource.data.gameRound == resource.data.gameRound && request.resource.data.syncVersion == resource.data.syncVersion + 1 && legalMove(resource.data,request.resource.data))
+   );
+  }
+ }
+}

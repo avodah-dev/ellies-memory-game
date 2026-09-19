@@ -1,3 +1,4 @@
+import { debugLog } from "../utils/debugLog";
 import { useState } from "react";
 import { CARD_DECKS } from "../data/cardDecks";
 import { useCardBackSelector } from "../hooks/useCardBackSelector";
@@ -8,7 +9,7 @@ const ENABLE_SETUP_DEBUG_LOGS = true;
 
 const logWizardInteraction = (...args: unknown[]) => {
 	if (!ENABLE_SETUP_DEBUG_LOGS) return;
-	console.log("[Setup Wizard Interaction]", ...args);
+	debugLog("[Setup Wizard Interaction]", ...args);
 };
 
 interface CardPackModalProps {
@@ -279,20 +280,22 @@ export const CardPackModal = ({
 				<button
 					type="button"
 					onClick={() => setActiveTab("pictures")}
-					className={`px-6 py-3 font-semibold transition-colors border-b-2 ${activeTab === "pictures"
-						? "border-blue-500 text-blue-600"
-						: "border-transparent text-gray-500 hover:text-gray-700"
-						}`}
+					className={`px-6 py-3 font-semibold transition-colors border-b-2 ${
+						activeTab === "pictures"
+							? "border-blue-500 text-blue-600"
+							: "border-transparent text-gray-500 hover:text-gray-700"
+					}`}
 				>
 					Pictures
 				</button>
 				<button
 					type="button"
 					onClick={() => setActiveTab("emoji")}
-					className={`px-6 py-3 font-semibold transition-colors border-b-2 ${activeTab === "emoji"
-						? "border-blue-500 text-blue-600"
-						: "border-transparent text-gray-500 hover:text-gray-700"
-						}`}
+					className={`px-6 py-3 font-semibold transition-colors border-b-2 ${
+						activeTab === "emoji"
+							? "border-blue-500 text-blue-600"
+							: "border-transparent text-gray-500 hover:text-gray-700"
+					}`}
 				>
 					Emoji
 				</button>
@@ -303,10 +306,11 @@ export const CardPackModal = ({
 				{displayedPacks.map((pack) => (
 					<div
 						key={pack.id}
-						className={`relative p-8 rounded-xl border-3 transition-all duration-200 transform can-hover:scale-105 touch-pan-y ${selectedPack === pack.id
-							? "border-blue-500 bg-blue-50 shadow-lg"
-							: "border-gray-200 bg-white can-hover:border-gray-300 can-hover:shadow-md"
-							}`}
+						className={`relative p-8 rounded-xl border-3 transition-all duration-200 transform can-hover:scale-105 touch-pan-y ${
+							selectedPack === pack.id
+								? "border-blue-500 bg-blue-50 shadow-lg"
+								: "border-gray-200 bg-white can-hover:border-gray-300 can-hover:shadow-md"
+						}`}
 					>
 						{/* Preview Icon Button */}
 						<button
@@ -341,7 +345,11 @@ export const CardPackModal = ({
 							</svg>
 						</button>
 
-						<button type="button" onClick={() => handleSelect(pack.id)} className="w-full">
+						<button
+							type="button"
+							onClick={() => handleSelect(pack.id)}
+							className="w-full"
+						>
 							{/* Preview Section */}
 							{pack.id === "animals-real" ? (
 								<div className="mb-4">
@@ -606,20 +614,21 @@ export const CardPackModal = ({
 							) : (
 								<div className="mb-4">
 									<div
-										className={`w-full h-32 rounded-lg bg-gradient-to-br ${pack.id === "animals"
-											? "from-amber-400 to-orange-600"
-											: pack.id === "plants"
-												? "from-green-400 to-green-700"
-												: pack.id === "buildings"
-													? "from-gray-500 to-gray-700"
-													: pack.id === "ocean"
-														? "from-blue-400 to-cyan-600"
-														: pack.id === "colors"
-															? "from-purple-400 to-purple-700"
-															: pack.id === "construction"
-																? "from-gray-600 to-gray-800"
-																: "from-purple-400 to-purple-700"
-											} flex items-center justify-center`}
+										className={`w-full h-32 rounded-lg bg-gradient-to-br ${
+											pack.id === "animals"
+												? "from-amber-400 to-orange-600"
+												: pack.id === "plants"
+													? "from-green-400 to-green-700"
+													: pack.id === "buildings"
+														? "from-gray-500 to-gray-700"
+														: pack.id === "ocean"
+															? "from-blue-400 to-cyan-600"
+															: pack.id === "colors"
+																? "from-purple-400 to-purple-700"
+																: pack.id === "construction"
+																	? "from-gray-600 to-gray-800"
+																	: "from-purple-400 to-purple-700"
+										} flex items-center justify-center`}
 									>
 										<span className="text-6xl">{pack.emoji}</span>
 									</div>

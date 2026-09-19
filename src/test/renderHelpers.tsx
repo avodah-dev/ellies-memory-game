@@ -30,9 +30,7 @@ interface WrapperProps {
 	children: ReactNode;
 }
 
-interface RenderWithProvidersOptions extends Omit<RenderOptions, "wrapper"> {
-	// Add any provider-specific options here if needed
-}
+type RenderWithProvidersOptions = Omit<RenderOptions, "wrapper">;
 
 interface RenderWithRouterOptions extends RenderWithProvidersOptions {
 	/**
@@ -67,9 +65,10 @@ function createRouterWrapper(
 	initialPath: string = "/",
 	additionalRoutes: string[] = [],
 ) {
+	let content: ReactNode;
 	// Create a root route
 	const rootRoute = createRootRoute({
-		component: () => null,
+		component: () => <BaseWrapper>{content}</BaseWrapper>,
 	});
 
 	// Collect all unique paths
@@ -108,11 +107,8 @@ function createRouterWrapper(
 
 	// Return wrapper component
 	return function RouterWrapper({ children }: WrapperProps): ReactElement {
-		return (
-			<RouterProvider router={router}>
-				<BaseWrapper>{children}</BaseWrapper>
-			</RouterProvider>
-		);
+		content = children;
+		return <RouterProvider router={router} />;
 	};
 }
 

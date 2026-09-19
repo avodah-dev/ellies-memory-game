@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+coverage
+playwright-report
+test-results
+.env
+.env.*
+*.log
+.firebase
+.vercel
+.cursor
+.DS_Store

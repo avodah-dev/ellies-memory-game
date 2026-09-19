@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card as CardType } from "../types";
 
@@ -23,19 +22,6 @@ export const Card = ({
 	forceGameplaySize = false,
 	forceGameplayBackground = false,
 }: CardProps) => {
-	// Debug: Log when isFlipped changes
-	useEffect(() => {
-		console.log(
-			"[CARD] Card prop changed",
-			JSON.stringify({
-				cardId: card.id,
-				isFlipped: card.isFlipped,
-				isMatched: card.isMatched,
-				timestamp: new Date().toISOString(),
-			}),
-		);
-	}, [card.id, card.isFlipped, card.isMatched]);
-
 	// Calculate font size based on card size and emoji size percentage
 	// emojiSizePercentage is a percentage (e.g., 72 means 72% of card size)
 	const fontSize = Math.round((size * emojiSizePercentage) / 100);
@@ -55,12 +41,18 @@ export const Card = ({
 	const activeCardBack = cardBack || defaultCardBack;
 
 	return (
-		<div
+		<button
+			type="button"
+			aria-label={
+				card.isFlipped || card.isMatched
+					? card.imageId.replaceAll("-", " ")
+					: `Face-down card ${card.id}`
+			}
+			aria-pressed={card.isFlipped}
+			disabled={card.isMatched}
+			data-card-id={card.id}
 			data-allow-touchmove
-			onPointerDown={(e) => {
-				e.preventDefault(); // Prevent text selection and other default behaviors
-				onClick();
-			}}
+			onClick={onClick}
 			className={`relative transition-transform duration-500 transform-gpu ${card.isMatched ? "cursor-default" : "cursor-pointer"}`}
 			style={{
 				width: `${size}px`,
@@ -166,6 +158,6 @@ export const Card = ({
 					)}
 				</div>
 			</div>
-		</div>
+		</button>
 	);
 };

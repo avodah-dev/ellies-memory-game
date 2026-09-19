@@ -1,3 +1,4 @@
+import { debugLog } from "../utils/debugLog";
 import {
 	useCallback,
 	useEffect,
@@ -36,8 +37,6 @@ interface GameBoardProps {
 	) => void;
 	onCursorLeave?: () => void;
 	remoteCursor?: RemoteCursorData | null;
-	// Callback when the final match animation completes (all cards matched and animations done)
-	onLastMatchAnimationComplete?: () => void;
 }
 
 interface CardAnimationData {
@@ -84,7 +83,6 @@ export const GameBoard = ({
 	onCursorMove,
 	onCursorLeave,
 	remoteCursor,
-	onLastMatchAnimationComplete,
 }: GameBoardProps) => {
 	const [lightboxCardId, setLightboxCardId] = useState<string | null>(null);
 	const boardRef = useRef<HTMLDivElement>(null);
@@ -129,53 +127,22 @@ export const GameBoard = ({
 		}
 	}, [onCursorLeave]);
 
-	// Handle flying card animation end - remove from state and check if game should finish
-	const handleFlyingCardAnimationEnd = useCallback(
-		(cardId: string) => {
-			console.log("[ANIMATION END] Flying card animation completed", {
-				cardId,
-			});
-
-			setFlyingCards((prev) => {
-				const next = new Map(prev);
-				next.delete(cardId);
-				cardPositionCache.current.delete(cardId);
-
-				// Check if all cards are matched and this was the last flying card
-				const allCardsMatched = cards.every((c) => c.isMatched);
-				const noMoreFlyingCards = next.size === 0;
-
-				console.log("[ANIMATION END] Checking game completion", {
-					cardId,
-					allCardsMatched,
-					remainingFlyingCards: next.size,
-					noMoreFlyingCards,
-				});
-
-				if (
-					allCardsMatched &&
-					noMoreFlyingCards &&
-					onLastMatchAnimationComplete
-				) {
-					console.log(
-						"[ANIMATION END] All animations complete, triggering game finish callback",
-					);
-					// Use setTimeout(0) to ensure state update completes before callback
-					setTimeout(() => onLastMatchAnimationComplete(), 0);
-				}
-
-				return next;
-			});
-		},
-		[cards, onLastMatchAnimationComplete],
-	);
+	// Animation cleanup never controls game rules or persistence.
+	const handleFlyingCardAnimationEnd = useCallback((cardId: string) => {
+		cardPositionCache.current.delete(cardId);
+		setFlyingCards((previous) => {
+			const next = new Map(previous);
+			next.delete(cardId);
+			return next;
+		});
+	}, []);
 
 	// Monitor card state changes for debugging
 	useEffect(() => {
 		const flippedCards = cards.filter((c) => c.isFlipped && !c.isMatched);
 		const matchedCards = cards.filter((c) => c.isMatched);
 
-		console.log(
+		debugLog(
 			"[CARD STATE] Cards state changed",
 			JSON.stringify({
 				totalCards: cards.length,
@@ -269,7 +236,7 @@ export const GameBoard = ({
 						width: rect.width,
 						height: rect.height,
 					});
-					console.log("[POSITION CACHE] Cached position for flipped card", {
+					debugLog("[POSITION CACHE] Cached position for flipped card", {
 						cardId: card.id,
 						rect: { left: rect.left, top: rect.top },
 					});
@@ -295,7 +262,7 @@ export const GameBoard = ({
 
 		// If we have newly matched cards, trigger flying animation
 		if (newlyMatched.length > 0) {
-			console.log("[MATCH TRANSITION] Detected newly matched cards", {
+			debugLog("[MATCH TRANSITION] Detected newly matched cards", {
 				newlyMatched: newlyMatched.map((c) => c.id),
 				matchedByPlayerId: newlyMatched[0]?.matchedByPlayerId,
 			});
@@ -359,7 +326,7 @@ export const GameBoard = ({
 					playerId: playerId,
 				};
 
-				console.log("[FLY DATA] Calculated fly data for card", {
+				debugLog("[FLY DATA] Calculated fly data for card", {
 					cardId: card.id,
 					source: cardPositionCache.current.has(card.id) ? "cache" : "dom",
 					positions: {
@@ -402,7 +369,7 @@ export const GameBoard = ({
 			{Array.from(flyingCards.entries()).map(([cardId, flyingState]) => {
 				const { flyData, card } = flyingState;
 
-				console.log("[RENDER] Rendering flying card overlay", {
+				debugLog("[RENDER] Rendering flying card overlay", {
 					cardId: cardId,
 					style: {
 						left: `${flyData.startX}px`,
@@ -487,7 +454,7 @@ export const GameBoard = ({
 					const shouldShowPlaceholder = card.isMatched || isFlying;
 
 					if (shouldShowPlaceholder) {
-						console.log("[RENDER] Showing placeholder for card", {
+						debugLog("[RENDER] Showing placeholder for card", {
 							cardId: card.id,
 							index,
 							isMatched: card.isMatched,

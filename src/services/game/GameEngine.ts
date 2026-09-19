@@ -154,10 +154,13 @@ export function createCardPairs(images: CardImage[]): Card[] {
 /**
  * Shuffle an array using Fisher-Yates algorithm
  */
-export function shuffleCards(cards: Card[]): Card[] {
+export function shuffleCards<T>(
+	cards: T[],
+	random: () => number = Math.random,
+): T[] {
 	const shuffled = [...cards];
 	for (let i = shuffled.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
+		const j = Math.floor(random() * (i + 1));
 		[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
 	}
 	return shuffled;
@@ -166,9 +169,12 @@ export function shuffleCards(cards: Card[]): Card[] {
 /**
  * Initialize cards from images (create pairs and shuffle)
  */
-export function initializeCards(images: CardImage[]): Card[] {
+export function initializeCards(
+	images: CardImage[],
+	random: () => number = Math.random,
+): Card[] {
 	const pairs = createCardPairs(images);
-	return shuffleCards(pairs);
+	return shuffleCards(pairs, random);
 }
 
 // ============================================
@@ -306,36 +312,6 @@ export function applyNoMatchWithReset(
 
 	// Switch to next player
 	const nextPlayer = getNextPlayer(state.currentPlayer);
-
-	return {
-		...state,
-		cards: newCards,
-		currentPlayer: nextPlayer,
-	};
-}
-
-/**
- * Apply no-match result (flip cards back, switch player)
- */
-export function applyNoMatch(
-	state: GameState,
-	matchResult: MatchResult,
-): GameState {
-	if (matchResult.isMatch) {
-		return state;
-	}
-
-	const { firstCard, secondCard } = matchResult;
-
-	// Flip cards back
-	const newCards = state.cards.map((c) =>
-		c.id === firstCard.id || c.id === secondCard.id
-			? { ...c, isFlipped: false }
-			: c,
-	);
-
-	// Switch to next player
-	const nextPlayer = state.currentPlayer === 1 ? 2 : 1;
 
 	return {
 		...state,
@@ -495,69 +471,4 @@ export function startGameWithCards(state: GameState, cards: Card[]): GameState {
 	};
 }
 
-// ============================================
-// State Serialization (for network sync)
-// ============================================
-
-/**
- * Clean state for persistence (remove transient animation properties)
- * Players are stored in settings/presence, not in game state
- */
-export function cleanStateForPersistence(state: GameState): GameState {
-	return {
-		...state,
-		cards: state.cards.map((card) => ({
-			id: card.id,
-			imageId: card.imageId,
-			imageUrl: card.imageUrl,
-			gradient: card.gradient,
-			isFlipped: card.isFlipped,
-			isMatched: card.isMatched,
-			matchedByPlayerId: card.matchedByPlayerId,
-			// Exclude: isFlyingToPlayer, flyingToPlayerId (transient animation state)
-		})),
-	};
-}
-
-/**
- * Validate incoming state from network
- * Players are stored in settings/presence, not validated here
- */
-export function validateState(state: unknown): state is GameState {
-	if (!state || typeof state !== "object") return false;
-
-	const s = state as GameState;
-
-	if (!Array.isArray(s.cards)) return false;
-	if (typeof s.currentPlayer !== "number") return false;
-	if (!["setup", "playing", "finished"].includes(s.gameStatus)) return false;
-
-	return true;
-}
-
-/**
- * Reconcile matched cards - fixes race condition where matchedByPlayerId is set
- * but isMatched is false (e.g., during sync delays).
- * This ensures consistency between ScoreBoard (which uses matchedByPlayerId)
- * and PlayerMatchesModal (which requires both isMatched && matchedByPlayerId).
- */
-export function reconcileMatchedCards(state: GameState): GameState {
-	const cardsNeedingReconciliation = state.cards.filter(
-		(c) => c.matchedByPlayerId !== undefined && !c.isMatched,
-	);
-
-	if (cardsNeedingReconciliation.length === 0) {
-		return state; // No changes needed
-	}
-
-	const newCards = state.cards.map((c) =>
-		c.matchedByPlayerId !== undefined && !c.isMatched
-			? {
-					...c,
-					isMatched: true,
-				}
-			: c,
-	);
-
-	return { ...state, cards: newCards };
-}
+export { isGameState as validateState } from "../sync/stateProtocol";

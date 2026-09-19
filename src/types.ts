@@ -122,9 +122,7 @@ export interface Room {
 	} | null;
 	// playerSlots: just stores slot assignment (1 or 2) per odahId
 	// Name/color come from RTDB presence only (single source of truth)
-	playerSlots?: Record<string, 1 | 2>;
-	// Legacy: old rooms may have full player objects - handle in joinRoom for backwards compat
-	players?: Record<string, { slot: 1 | 2; name: string; color: string }>;
+	playerSlots: Record<string, 1 | 2>;
 	createdAt: number;
 	lastActivity: number;
 }

@@ -7,7 +7,13 @@
  * the adapter syncs state to/from Firestore.
  */
 
-import type { CardPack, GameState, Room, RoomConfig } from "../../types";
+import type {
+	CardPack,
+	GameState,
+	OnlineGameState,
+	Room,
+	RoomConfig,
+} from "../../types";
 
 export interface CreateRoomOptions {
 	hostId: string;
@@ -63,7 +69,10 @@ export interface ISyncAdapter {
 	 * Subscribe to game state changes
 	 * @returns Unsubscribe function
 	 */
-	subscribeToState(callback: (state: GameState) => void): () => void;
+	subscribeToState(
+		callback: (state: GameState) => void,
+		onError?: (error: Error) => void,
+	): () => void;
 
 	// ============================================
 	// Room Operations (Online mode only)
@@ -109,9 +118,12 @@ export interface ISyncAdapter {
 	): Promise<void>;
 
 	/**
-	 * Start the game (host only)
+	 * Start the game (host only), returning the committed round and revision.
 	 */
-	startGame?(roomCode: string, initialState: GameState): Promise<void>;
+	startGame?(
+		roomCode: string,
+		initialState: GameState,
+	): Promise<OnlineGameState>;
 }
 
 /**
@@ -123,7 +135,10 @@ export abstract class BaseSyncAdapter implements ISyncAdapter {
 	abstract isConnected(): boolean;
 	abstract getState(): Promise<GameState | null>;
 	abstract setState(state: GameState): Promise<void>;
-	abstract subscribeToState(callback: (state: GameState) => void): () => void;
+	abstract subscribeToState(
+		callback: (state: GameState) => void,
+		onError?: (error: Error) => void,
+	): () => void;
 
 	// Optional methods - default to throwing "not supported"
 	createRoom?(_options: CreateRoomOptions): Promise<string>;
@@ -138,5 +153,8 @@ export abstract class BaseSyncAdapter implements ISyncAdapter {
 		_roomCode: string,
 		_config: Partial<RoomConfig>,
 	): Promise<void>;
-	startGame?(_roomCode: string, _initialState: GameState): Promise<void>;
+	startGame?(
+		_roomCode: string,
+		_initialState: GameState,
+	): Promise<OnlineGameState>;
 }

@@ -1,3 +1,4 @@
+import type { ReactNode, AnchorHTMLAttributes } from "react";
 /**
  * Router Mock for Testing
  *
@@ -173,7 +174,11 @@ export function createRouterMock() {
 		useSearch: useSearchMock,
 		useParams: useParamsMock,
 		useMatch: useMatchMock,
-		Link: ({ to, children, ...props }: any) => {
+		Link: ({
+			to,
+			children,
+			...props
+		}: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => {
 			return {
 				type: "a",
 				props: {
@@ -188,6 +193,6 @@ export function createRouterMock() {
 			};
 		},
 		Outlet: () => null,
-		RouterProvider: ({ children }: any) => children,
+		RouterProvider: ({ children }: { children: ReactNode }) => children,
 	};
 }

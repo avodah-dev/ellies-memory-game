@@ -1335,28 +1335,4 @@ describe("useGameController", () => {
 	// ============================================
 	// Player Management Tests (No-op in controller)
 	// ============================================
-
-	describe("player management", () => {
-		it("updatePlayerName should be a no-op", () => {
-			const { result } = renderHook(() =>
-				useGameController(createTestOptions()),
-			);
-
-			// Should not throw
-			act(() => {
-				result.current.updatePlayerName(1, "New Name");
-			});
-		});
-
-		it("updatePlayerColor should be a no-op", () => {
-			const { result } = renderHook(() =>
-				useGameController(createTestOptions()),
-			);
-
-			// Should not throw
-			act(() => {
-				result.current.updatePlayerColor(1, "#ff0000");
-			});
-		});
-	});
 });

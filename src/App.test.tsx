@@ -1,3 +1,6 @@
+import { HomeScreen } from "./screens/HomeScreen";
+import { GameplayScreen } from "./screens/GameplayScreen";
+import { OnlineLobbyScreen } from "./screens/OnlineLobbyScreen";
 /**
  * App.tsx Critical Behavior Tests
  *
@@ -13,11 +16,12 @@
 
 /// <reference types="@testing-library/jest-dom" />
 
-import React, { type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
 	act,
 	fireEvent,
 	render,
+	renderHook,
 	screen,
 	waitFor,
 } from "@testing-library/react";
@@ -37,11 +41,16 @@ vi.mock("@tanstack/react-router", () => ({
 	Link: ({ children, to }: { children: ReactNode; to: string }) => (
 		<a href={to}>{children}</a>
 	),
-	Outlet: () => null,
+	Outlet: () =>
+		mockRouterState.location.pathname === "/" ? (
+			<HomeScreen />
+		) : mockRouterState.location.pathname.endsWith("/game") ? (
+			<GameplayScreen />
+		) : mockRouterState.location.pathname.startsWith("/online") ? (
+			<OnlineLobbyScreen />
+		) : null,
 	createRouter: vi.fn(),
-	RouterProvider: ({ children }: { children: ReactNode }) => (
-		<>{children}</>
-	),
+	RouterProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
 // ============================================
@@ -286,20 +295,17 @@ vi.mock("./components/GameOver", () => ({
 }));
 
 vi.mock("./components/Modal", () => ({
-	Modal: ({
-		children,
-		isOpen,
-	}: {
-		children: ReactNode;
-		isOpen: boolean;
-	}) => (isOpen ? <div data-testid="modal">{children}</div> : null),
+	Modal: ({ children, isOpen }: { children: ReactNode; isOpen: boolean }) =>
+		isOpen ? <div data-testid="modal">{children}</div> : null,
 }));
 
 vi.mock("./components/Pong", () => ({
 	Pong: ({ onClose }: { onClose: () => void }) => (
 		<div data-testid="pong">
 			Pong Game
-			<button type="button" onClick={onClose}>Close</button>
+			<button type="button" onClick={onClose}>
+				Close
+			</button>
 		</div>
 	),
 }));
@@ -390,7 +396,8 @@ class MockResizeObserver {
 	unobserve = vi.fn();
 	disconnect = vi.fn();
 }
-global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+globalThis.ResizeObserver =
+	MockResizeObserver as unknown as typeof ResizeObserver;
 
 // Mock matchMedia
 Object.defineProperty(window, "matchMedia", {
@@ -431,6 +438,9 @@ Object.defineProperty(window, "speechSynthesis", {
 // ============================================
 
 import App from "./App";
+import { useAppModel } from "./hooks/useAppModel";
+import { useOnlineStore } from "./stores/onlineStore";
+import { createTestRoom } from "./test/testUtils";
 
 // ============================================
 // Tests
@@ -448,6 +458,72 @@ describe("App", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 	});
+
+	it.each(["success", "failure"] as const)(
+		"waits for an online reset before clearing state (%s)",
+		async (outcome) => {
+			let resolve!: () => void;
+			let reject!: (reason: Error) => void;
+			const pending = new Promise<void>((yes, no) => {
+				resolve = yes;
+				reject = no;
+			});
+			const resetRoom = vi.fn(() => pending);
+			const mockedStore = vi.mocked(useOnlineStore);
+			const original = mockedStore.getMockImplementation()!;
+			mockedStore.mockReturnValue({
+				roomCode: "TEST",
+				room: createTestRoom({ status: "playing" }),
+				odahId: "host",
+				isHost: true,
+				presenceData: { host: { slot: 1, name: "Host", color: "blue" } },
+				resetRoomToWaiting: resetRoom,
+				subscribeToPresence: () => () => {},
+				leaveRoom: vi.fn(),
+				updateRoomConfig: vi.fn(),
+				setPlayerNamePreference: vi.fn(),
+				updatePlayerName: vi.fn(),
+			});
+			mockRouterState.location.pathname = "/online/game";
+			sessionStorage.setItem("appNavigation", "true");
+			const hook = renderHook(() => useAppModel());
+			try {
+				act(() => hook.result.current.setShowResetConfirmation(true));
+				expect(hook.result.current.isOnlineMode).toBeTruthy();
+				const reset = hook.result.current.resetGame;
+				const setState = hook.result.current.onlineGame.setFullGameState;
+				mockNavigate.mockClear();
+				let action!: Promise<void>;
+				act(() => {
+					action = hook.result.current.handleNewGame();
+				});
+				expect(resetRoom).toHaveBeenCalledOnce();
+				expect(reset).not.toHaveBeenCalled();
+				expect(setState).not.toHaveBeenCalled();
+				expect(mockNavigate).not.toHaveBeenCalled();
+				await act(async () => {
+					if (outcome === "success") resolve();
+					else reject(new Error("offline"));
+					await action;
+				});
+				if (outcome === "success") {
+					expect(reset).toHaveBeenCalledOnce();
+					expect(setState).toHaveBeenCalledWith(
+						expect.objectContaining({ gameStatus: "setup" }),
+					);
+					expect(mockNavigate).toHaveBeenCalledWith({ to: "/online/waiting" });
+				} else {
+					expect(reset).not.toHaveBeenCalled();
+					expect(setState).not.toHaveBeenCalled();
+					expect(mockNavigate).not.toHaveBeenCalled();
+					expect(hook.result.current.showResetConfirmation).toBe(true);
+				}
+			} finally {
+				hook.unmount();
+				mockedStore.mockImplementation(original);
+			}
+		},
+	);
 
 	// ============================================
 	// Setup Step Derivation Tests

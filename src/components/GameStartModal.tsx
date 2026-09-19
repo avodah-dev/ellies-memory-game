@@ -1,3 +1,4 @@
+import { debugLog } from "../utils/debugLog";
 import { useEffect, useState } from "react";
 import type { Player } from "../types";
 import { PlayerNamePicker } from "./PlayerNamePicker";
@@ -6,7 +7,7 @@ const ENABLE_SETUP_DEBUG_LOGS = true;
 
 const logWizardInteraction = (...args: unknown[]) => {
 	if (!ENABLE_SETUP_DEBUG_LOGS) return;
-	console.log("[Setup Wizard Interaction]", ...args);
+	debugLog("[Setup Wizard Interaction]", ...args);
 };
 
 interface GameStartModalProps {
@@ -203,9 +204,7 @@ export const GameStartModal = ({
 
 				{/* Name + First indicator grouped together */}
 				<div className="flex-1 flex items-center justify-center gap-1.5">
-					<span className="text-lg font-bold text-gray-800">
-						{name}
-					</span>
+					<span className="text-lg font-bold text-gray-800">{name}</span>
 					{isSelected && (
 						<svg
 							className="w-5 h-5 flex-shrink-0"
@@ -269,7 +268,12 @@ export const GameStartModal = ({
 					className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
 					title="Swap players"
 				>
-					<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<svg
+						className="w-5 h-5"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
+					>
 						<title>Swap</title>
 						<path
 							strokeLinecap="round"
@@ -328,7 +332,9 @@ export const GameStartModal = ({
 
 						{/* Color Picker - compact inline */}
 						<div className="flex items-center gap-2 pt-2 border-t border-gray-200">
-							<span className="text-xs text-gray-500 flex-shrink-0">Color:</span>
+							<span className="text-xs text-gray-500 flex-shrink-0">
+								Color:
+							</span>
 							<div className="flex flex-wrap gap-1.5">
 								{colorOptions.map((color) => (
 									<button
@@ -347,7 +353,9 @@ export const GameStartModal = ({
 								<input
 									type="color"
 									value={tempColors[editingPlayer]}
-									onChange={(e) => handleColorChange(editingPlayer, e.target.value)}
+									onChange={(e) =>
+										handleColorChange(editingPlayer, e.target.value)
+									}
 									className="w-6 h-6 rounded-full border-2 border-gray-300 cursor-pointer"
 									title="Custom color"
 								/>

@@ -1,34 +1,43 @@
-import "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import { RouterProvider } from "@tanstack/react-router";
-import { PostHogProvider } from "posthog-js/react";
-import { router } from "./router";
+import { initializeRuntimeConfig } from "./lib/runtimeConfig";
+import ports from "../local-ports.json";
 
-const posthogKey = "phc_LMb2gHTzOA8grLHOZJFsGvfiX2Adcb41Nqbux1EW0yH";
-const posthogHost = "https://us.i.posthog.com";
-const isLocalDev = import.meta.env.MODE === "development";
-
-const rootElement = document.getElementById("root");
-if (!rootElement) {
-	throw new Error("Root element not found");
+async function main() {
+	const rootElement = document.getElementById("root");
+	if (!rootElement) throw new Error("Root element not found");
+	const config = await initializeRuntimeConfig();
+	if (config.environment === "emulator") {
+		try {
+			const response = await fetch(`http://127.0.0.1:${ports.hub}/emulators`, {
+				signal: AbortSignal.timeout(3000),
+			});
+			if (!response.ok) throw new Error("Emulators unavailable");
+			const running = await response.json();
+			if (!running.auth || !running.firestore || !running.database)
+				throw new Error("All Firebase emulators are required");
+		} catch {
+			rootElement.textContent =
+				"Local Firebase emulators are unavailable. Start the app with bun run dev:local.";
+			return;
+		}
+	}
+	if (config.environment === "production") {
+		const { default: posthog } = await import("posthog-js");
+		posthog.init("phc_LMb2gHTzOA8grLHOZJFsGvfiX2Adcb41Nqbux1EW0yH", {
+			api_host: "https://us.i.posthog.com",
+			defaults: "2025-05-24",
+			capture_exceptions: true,
+		});
+	}
+	const { router } = await import("./router");
+	createRoot(rootElement).render(<RouterProvider router={router} />);
 }
-
-const app = <RouterProvider router={router} />;
-
-createRoot(rootElement).render(
-	isLocalDev ? (
-		app
-	) : (
-		<PostHogProvider
-			apiKey={posthogKey}
-			options={{
-				api_host: posthogHost,
-				defaults: "2025-05-24",
-				capture_exceptions: true,
-			}}
-		>
-			{app}
-		</PostHogProvider>
-	),
-);
+void main().catch((error) => {
+	console.error(error);
+	const root = document.getElementById("root");
+	if (root)
+		root.textContent =
+			"Matchimus could not start. Please reload or contact the site owner.";
+});

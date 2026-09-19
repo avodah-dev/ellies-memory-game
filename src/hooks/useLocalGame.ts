@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 /**
  * useLocalGame - Hook for local (same-device) game mode
  *
@@ -99,7 +100,7 @@ export function useLocalGame(): UseLocalGameReturn {
 	// Settings from Zustand Store (persisted)
 	// ============================================
 
-	const { settings } = useSettingsStore();
+	const settings = useSettingsStore((s) => s.settings);
 	const {
 		player1Name,
 		player1Color,
@@ -124,7 +125,18 @@ export function useLocalGame(): UseLocalGameReturn {
 		setFlipDuration,
 		setEmojiSizePercentage,
 		setTtsEnabled,
-	} = useSettingsStore();
+	} = useSettingsStore(
+		useShallow((s) => ({
+			setPlayerName: s.setPlayerName,
+			setPlayerColor: s.setPlayerColor,
+			setCardSize: s.setCardSize,
+			setAutoSizeEnabled: s.setAutoSizeEnabled,
+			setUseWhiteCardBackground: s.setUseWhiteCardBackground,
+			setFlipDuration: s.setFlipDuration,
+			setEmojiSizePercentage: s.setEmojiSizePercentage,
+			setTtsEnabled: s.setTtsEnabled,
+		})),
+	);
 
 	// Derive player settings for getPlayersFromSettings
 	const playerSettings = useMemo(
@@ -153,7 +165,16 @@ export function useLocalGame(): UseLocalGameReturn {
 		setAllCardsFlipped,
 		layoutMetrics,
 		updateLayoutMetrics,
-	} = useUIStore();
+	} = useUIStore(
+		useShallow((s) => ({
+			showStartModal: s.showStartModal,
+			setShowStartModal: s.setShowStartModal,
+			allCardsFlipped: s.allCardsFlipped,
+			setAllCardsFlipped: s.setAllCardsFlipped,
+			layoutMetrics: s.layoutMetrics,
+			updateLayoutMetrics: s.updateLayoutMetrics,
+		})),
+	);
 
 	// ============================================
 	// Effect Manager & TTS

@@ -6,7 +6,13 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-	globalIgnores(["dist"]),
+	globalIgnores([
+		"dist",
+		"coverage",
+		"playwright-report",
+		"test-results",
+		"src/routeTree.gen.ts",
+	]),
 	{
 		files: ["**/*.{ts,tsx}"],
 		extends: [
@@ -15,9 +21,23 @@ export default defineConfig([
 			reactHooks.configs["recommended-latest"],
 			reactRefresh.configs.vite,
 		],
+		rules: {
+			"@typescript-eslint/no-unused-vars": [
+				"error",
+				{
+					argsIgnorePattern: "^_",
+					varsIgnorePattern: "^_",
+					ignoreRestSiblings: true,
+				},
+			],
+		},
 		languageOptions: {
 			ecmaVersion: 2020,
-			globals: globals.browser,
+			globals: { ...globals.browser, ...globals.node },
 		},
+	},
+	{
+		files: ["src/test/**/*", "src/**/*.test.*"],
+		rules: { "react-refresh/only-export-components": "off" },
 	},
 ]);

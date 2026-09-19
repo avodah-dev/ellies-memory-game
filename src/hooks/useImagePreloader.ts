@@ -1,3 +1,4 @@
+import { debugLog } from "../utils/debugLog";
 /**
  * useImagePreloader - Hook to preload game assets
  *
@@ -142,7 +143,7 @@ export function useImagePreloader({
 			total: newUrls.length,
 		});
 
-		console.log(
+		debugLog(
 			`[ImagePreloader] Preloading ${newUrls.length} images...`,
 			newUrls,
 		);
@@ -155,7 +156,7 @@ export function useImagePreloader({
 				preloadedRef.current.add(url);
 			}
 
-			console.log(
+			debugLog(
 				`[ImagePreloader] Preload complete: ${result.loaded}/${result.total} loaded, ${result.failed} failed`,
 			);
 

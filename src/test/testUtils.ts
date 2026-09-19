@@ -144,6 +144,7 @@ export function createTestSettings(
 		player2Name: "Player 2",
 		player2Color: "#10b981",
 		firstPlayer: 1,
+		savedPlayerNames: [],
 		cardSize: 100,
 		autoSizeEnabled: true,
 		useWhiteCardBackground: false,
