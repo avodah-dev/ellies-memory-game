@@ -1,4 +1,4 @@
-import buildInfo from "../build-info.json";
+const buildInfo = __BUILD_INFO__;
 import { Modal } from "./Modal";
 
 interface BuildInfoModalProps {

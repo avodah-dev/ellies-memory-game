@@ -1,3 +1,4 @@
+import { createTestSettings } from "../test/testUtils";
 /**
  * settingsStore Tests
  *
@@ -19,25 +20,7 @@ describe("settingsStore", () => {
 		setupStorageMocks();
 		// Reset store state
 		useSettingsStore.setState({
-			settings: {
-				player1Name: "Player 1",
-				player1Color: "#3b82f6",
-				player2Name: "Player 2",
-				player2Color: "#10b981",
-				firstPlayer: 1,
-				cardSize: 100,
-				autoSizeEnabled: true,
-				useWhiteCardBackground: false,
-				flipDuration: 1500,
-				emojiSizePercentage: 72,
-				ttsEnabled: false,
-				backgroundBlurEnabled: true,
-				cardPack: "animals",
-				background: "default",
-				cardBack: "default",
-				localPairCount: 20,
-				onlinePairCount: 20,
-			},
+			settings: createTestSettings(),
 		});
 	});
 
@@ -222,9 +205,9 @@ describe("settingsStore", () => {
 	describe("game settings", () => {
 		it("should update card pack", () => {
 			const { setCardPack } = useSettingsStore.getState();
-			setCardPack("food");
+			setCardPack("plants");
 
-			expect(useSettingsStore.getState().settings.cardPack).toBe("food");
+			expect(useSettingsStore.getState().settings.cardPack).toBe("plants");
 		});
 
 		it("should update background", () => {
@@ -278,13 +261,13 @@ describe("settingsStore", () => {
 
 			updateSettings({
 				player1Name: "Test Player",
-				cardPack: "numbers",
+				cardPack: "colors",
 				localPairCount: 12,
 			});
 
 			const { settings } = useSettingsStore.getState();
 			expect(settings.player1Name).toBe("Test Player");
-			expect(settings.cardPack).toBe("numbers");
+			expect(settings.cardPack).toBe("colors");
 			expect(settings.localPairCount).toBe(12);
 			// Unchanged settings remain
 			expect(settings.player2Name).toBe("Player 2");

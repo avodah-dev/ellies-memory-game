@@ -2,17 +2,32 @@
 	"rules": {
 		"presence": {
 			"$roomCode": {
-				".read": true,
-				"$odahId": {
-					".write": "auth != null && auth.uid == $odahId"
+				".read": "auth != null",
+				"$uid": {
+					".write": "auth != null && auth.uid == $uid",
+					".validate": "newData.hasChildren(['odahId','name','color','slot','online','lastSeen'])",
+					"odahId": { ".validate": "newData.val() == $uid" },
+					"name": {
+						".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+					},
+					"color": { ".validate": "newData.isString()" },
+					"slot": { ".validate": "newData.val() == 1 || newData.val() == 2" },
+					"online": { ".validate": "newData.isBoolean()" },
+					"lastSeen": { ".validate": "newData.isNumber()" },
+					"$other": { ".validate": false }
 				}
 			}
 		},
 		"cursors": {
 			"$roomCode": {
-				".read": true,
-				"$odahId": {
-					".write": "auth != null && auth.uid == $odahId"
+				".read": "auth != null",
+				"$uid": {
+					".write": "auth != null && auth.uid == $uid",
+					".validate": "newData.hasChildren(['x','y','timestamp'])",
+					"x": { ".validate": "newData.isNumber()" },
+					"y": { ".validate": "newData.isNumber()" },
+					"timestamp": { ".validate": "newData.isNumber()" },
+					"$other": { ".validate": false }
 				}
 			}
 		}

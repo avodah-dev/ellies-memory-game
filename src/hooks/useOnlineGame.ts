@@ -1,3 +1,4 @@
+import { useOnlineConnection } from "./useOnlineConnection";
 /**
  * useOnlineGame - Hook for online multiplayer game logic
  *
@@ -69,9 +70,12 @@ export function useOnlineGame(options: UseOnlineGameOptions) {
 		[flipDuration],
 	);
 
+	const onlineReady = useOnlineConnection(roomCode);
+
 	// Use the game controller with online mode configuration
 	const controller = useGameController({
 		mode: "online",
+		onlineReady,
 		initialGameState,
 		initialSettings,
 		players,
@@ -81,19 +85,19 @@ export function useOnlineGame(options: UseOnlineGameOptions) {
 		roomCode,
 	});
 
+	const { settings, updateSettings } = controller;
 	// Update flipDuration when it changes from the host settings
 	useEffect(() => {
-		if (controller.settings.flipDuration !== flipDuration) {
-			controller.updateSettings({ flipDuration });
+		if (settings.flipDuration !== flipDuration) {
+			updateSettings({ flipDuration });
 		}
-	}, [
-		flipDuration,
-		controller.settings.flipDuration,
-		controller.updateSettings,
-	]);
+	}, [flipDuration, settings.flipDuration, updateSettings]);
 
 	return {
 		gameState: controller.gameState,
+		syncError: controller.syncError,
+		resynchronize: controller.resynchronize,
+		onlineReady,
 		setFullGameState: controller.setFullGameState,
 		flipCard: controller.flipCard,
 		endTurn: controller.endTurn,

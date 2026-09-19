@@ -1,10 +1,11 @@
+import { debugLog } from "../utils/debugLog";
 import { CARD_BACK_OPTIONS } from "../hooks/useCardBackSelector";
 
 const ENABLE_SETUP_DEBUG_LOGS = true;
 
 const logWizardInteraction = (...args: unknown[]) => {
 	if (!ENABLE_SETUP_DEBUG_LOGS) return;
-	console.log("[Setup Wizard Interaction]", ...args);
+	debugLog("[Setup Wizard Interaction]", ...args);
 };
 
 interface CardBackModalProps {

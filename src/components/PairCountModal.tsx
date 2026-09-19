@@ -1,3 +1,4 @@
+import { debugLog } from "../utils/debugLog";
 import {
 	calculateGridDimensions,
 	PAIR_COUNT_OPTIONS,
@@ -7,7 +8,7 @@ const ENABLE_SETUP_DEBUG_LOGS = true;
 
 const logWizardInteraction = (...args: unknown[]) => {
 	if (!ENABLE_SETUP_DEBUG_LOGS) return;
-	console.log("[Setup Wizard Interaction]", ...args);
+	debugLog("[Setup Wizard Interaction]", ...args);
 };
 
 interface PairCountModalProps {

@@ -1,3 +1,4 @@
+import { createTestSettings } from "../test/testUtils";
 /**
  * useLocalGame Tests
  *
@@ -41,25 +42,7 @@ describe("useLocalGame", () => {
 
 		// Reset settings store
 		useSettingsStore.setState({
-			settings: {
-				player1Name: "Player 1",
-				player1Color: "#3b82f6",
-				player2Name: "Player 2",
-				player2Color: "#10b981",
-				firstPlayer: 1,
-				cardSize: 100,
-				autoSizeEnabled: true,
-				useWhiteCardBackground: false,
-				flipDuration: 1500,
-				emojiSizePercentage: 72,
-				ttsEnabled: false,
-				backgroundBlurEnabled: true,
-				cardPack: "animals",
-				background: "default",
-				cardBack: "default",
-				localPairCount: 20,
-				onlinePairCount: 20,
-			},
+			settings: createTestSettings(),
 		});
 
 		// Reset UI store

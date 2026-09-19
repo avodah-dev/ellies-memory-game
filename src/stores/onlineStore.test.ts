@@ -298,10 +298,10 @@ describe("onlineStore", () => {
 			const { updateRoomConfig } = useOnlineStore.getState();
 			const adapter = getMockFirestoreSyncAdapter();
 
-			await updateRoomConfig({ cardPack: "food" });
+			await updateRoomConfig({ cardPack: "plants" });
 
 			expect(adapter.updateRoomConfig).toHaveBeenCalledWith("MOCK", {
-				cardPack: "food",
+				cardPack: "plants",
 			});
 		});
 
@@ -351,7 +351,7 @@ describe("onlineStore", () => {
 
 	describe("presence data", () => {
 		it("should set presence data", () => {
-			const { setPresenceData, connect } = useOnlineStore.getState();
+			const { setPresenceData } = useOnlineStore.getState();
 
 			const presenceData = {
 				"host-id": createHostPresence(),

@@ -69,7 +69,7 @@ export const mockScreenfull = {
 		}
 	}),
 
-	on: vi.fn((event: string, callback: (...args: any[]) => void) => {
+	on: vi.fn((event: string, callback: (error?: Error) => void) => {
 		if (event === "change") {
 			state.changeCallbacks.push(callback);
 		} else if (event === "error") {
@@ -77,7 +77,7 @@ export const mockScreenfull = {
 		}
 	}),
 
-	off: vi.fn((event: string, callback: (...args: any[]) => void) => {
+	off: vi.fn((event: string, callback: (error?: Error) => void) => {
 		if (event === "change") {
 			const index = state.changeCallbacks.indexOf(callback);
 			if (index > -1) {

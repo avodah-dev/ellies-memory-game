@@ -28,3 +28,8 @@ dist-ssr
 # Cursor debug files
 .cursor
 .tanstack
+coverage/
+playwright-report/
+test-results/
+*-debug.log
+.firebase/

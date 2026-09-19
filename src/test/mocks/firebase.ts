@@ -6,7 +6,13 @@
  */
 
 import { vi } from "vitest";
-import type { GameState, OnlineGameState, Room, RoomConfig } from "../../types";
+import type {
+	CardPack,
+	GameState,
+	OnlineGameState,
+	Room,
+	RoomConfig,
+} from "../../types";
 import { createTestOnlineGameState, createTestRoom } from "../testUtils";
 
 // ============================================
@@ -71,7 +77,7 @@ export function createMockFirestoreSyncAdapter(
 				hostId: string;
 				hostName: string;
 				hostColor: string;
-				cardPack: string;
+				cardPack: CardPack;
 				background: string;
 				cardBack: string;
 				pairCount: number;
@@ -83,7 +89,7 @@ export function createMockFirestoreSyncAdapter(
 					roomCode,
 					hostId: options.hostId,
 					config: {
-						cardPack: options.cardPack as any,
+						cardPack: options.cardPack,
 						background: options.background,
 						cardBack: options.cardBack,
 						pairCount: options.pairCount,
@@ -107,7 +113,7 @@ export function createMockFirestoreSyncAdapter(
 				if (!state.room) {
 					state.room = createTestRoom({ roomCode: roomCode.toUpperCase() });
 				}
-				state.room.playerSlots[options.odahId] = 2;
+				state.room.playerSlots![options.odahId] = 2;
 				return state.room;
 			},
 		),
@@ -143,7 +149,7 @@ export function createMockFirestoreSyncAdapter(
 
 		updateRoomConfig: vi.fn(
 			async (_roomCode: string, config: Partial<RoomConfig>) => {
-				if (state.room) {
+				if (state.room?.config) {
 					state.room.config = { ...state.room.config, ...config };
 					state.roomCallbacks.forEach((cb) => cb(state.room));
 				}

@@ -63,7 +63,10 @@ export interface ISyncAdapter {
 	 * Subscribe to game state changes
 	 * @returns Unsubscribe function
 	 */
-	subscribeToState(callback: (state: GameState) => void): () => void;
+	subscribeToState(
+		callback: (state: GameState) => void,
+		onError?: (error: Error) => void,
+	): () => void;
 
 	// ============================================
 	// Room Operations (Online mode only)
@@ -123,7 +126,10 @@ export abstract class BaseSyncAdapter implements ISyncAdapter {
 	abstract isConnected(): boolean;
 	abstract getState(): Promise<GameState | null>;
 	abstract setState(state: GameState): Promise<void>;
-	abstract subscribeToState(callback: (state: GameState) => void): () => void;
+	abstract subscribeToState(
+		callback: (state: GameState) => void,
+		onError?: (error: Error) => void,
+	): () => void;
 
 	// Optional methods - default to throwing "not supported"
 	createRoom?(_options: CreateRoomOptions): Promise<string>;

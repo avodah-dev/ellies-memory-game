@@ -1,3 +1,4 @@
+import { debugLog } from "../utils/debugLog";
 import { useState } from "react";
 import { GAME_THEMES, getThemesByCategory } from "../data/gameThemes";
 import type { GameTheme } from "../types";
@@ -6,7 +7,7 @@ const ENABLE_SETUP_DEBUG_LOGS = true;
 
 const logWizardInteraction = (...args: unknown[]) => {
 	if (!ENABLE_SETUP_DEBUG_LOGS) return;
-	console.log("[Setup Wizard Interaction]", ...args);
+	debugLog("[Setup Wizard Interaction]", ...args);
 };
 
 interface ThemeSelectorModalProps {

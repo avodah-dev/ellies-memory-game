@@ -1,0 +1,12 @@
+{
+	"web": 3472,
+	"preview": 3473,
+	"auth": 5450,
+	"firestore": 5451,
+	"database": 5452,
+	"hub": 5453,
+	"logging": 5454,
+	"ui": 5455,
+	"firestoreWebSocket": 5456,
+	"server": 5457
+}

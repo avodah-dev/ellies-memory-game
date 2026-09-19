@@ -1,3 +1,5 @@
+> Historical proposal. See [the current architecture](architecture.md) for implemented ownership and testing boundaries. The duplicate hooks/store described below no longer represent the current app.
+
 # Game Logic Consolidation Plan
 
 ## Problem Statement

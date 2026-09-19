@@ -1,3 +1,6 @@
+import { HomeScreen } from "./screens/HomeScreen";
+import { GameplayScreen } from "./screens/GameplayScreen";
+import { OnlineLobbyScreen } from "./screens/OnlineLobbyScreen";
 /**
  * App.tsx Critical Behavior Tests
  *
@@ -13,7 +16,7 @@
 
 /// <reference types="@testing-library/jest-dom" />
 
-import React, { type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
 	act,
 	fireEvent,
@@ -37,11 +40,16 @@ vi.mock("@tanstack/react-router", () => ({
 	Link: ({ children, to }: { children: ReactNode; to: string }) => (
 		<a href={to}>{children}</a>
 	),
-	Outlet: () => null,
+	Outlet: () =>
+		mockRouterState.location.pathname === "/" ? (
+			<HomeScreen />
+		) : mockRouterState.location.pathname.endsWith("/game") ? (
+			<GameplayScreen />
+		) : mockRouterState.location.pathname.startsWith("/online") ? (
+			<OnlineLobbyScreen />
+		) : null,
 	createRouter: vi.fn(),
-	RouterProvider: ({ children }: { children: ReactNode }) => (
-		<>{children}</>
-	),
+	RouterProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
 // ============================================
@@ -286,20 +294,17 @@ vi.mock("./components/GameOver", () => ({
 }));
 
 vi.mock("./components/Modal", () => ({
-	Modal: ({
-		children,
-		isOpen,
-	}: {
-		children: ReactNode;
-		isOpen: boolean;
-	}) => (isOpen ? <div data-testid="modal">{children}</div> : null),
+	Modal: ({ children, isOpen }: { children: ReactNode; isOpen: boolean }) =>
+		isOpen ? <div data-testid="modal">{children}</div> : null,
 }));
 
 vi.mock("./components/Pong", () => ({
 	Pong: ({ onClose }: { onClose: () => void }) => (
 		<div data-testid="pong">
 			Pong Game
-			<button type="button" onClick={onClose}>Close</button>
+			<button type="button" onClick={onClose}>
+				Close
+			</button>
 		</div>
 	),
 }));
@@ -390,7 +395,8 @@ class MockResizeObserver {
 	unobserve = vi.fn();
 	disconnect = vi.fn();
 }
-global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+globalThis.ResizeObserver =
+	MockResizeObserver as unknown as typeof ResizeObserver;
 
 // Mock matchMedia
 Object.defineProperty(window, "matchMedia", {
