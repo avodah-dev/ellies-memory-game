@@ -2,6 +2,8 @@
 
 Matchimus runs on Bun and Fastify in a Docker container. Firebase remains the backend for anonymous authentication, game state, presence and cursors. The Fly organization is `avodah`.
 
+The GitHub repository is [avodah-dev/ellies-memory-game](https://github.com/avodah-dev/ellies-memory-game). Its `main` branch requires a pull request and an up-to-date passing `verify` check, including for administrators. Fly deployment credentials live in this repository's GitHub environments.
+
 | Branch | GitHub environment | Fly app | Runtime environment |
 | --- | --- | --- | --- |
 | `staging` | `preview` | `matchimus-preview` | `preview` |
