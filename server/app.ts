@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { emulatorCsp } from "../shared/emulatorCsp";
 import {
 	parseRuntimeConfig,
 	type RuntimeConfig,
@@ -29,20 +30,15 @@ export async function createServer(options: {
 		reply.header("X-Content-Type-Options", "nosniff");
 		reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
 		if (options.config.environment === "emulator")
-			reply.header(
-				"Content-Security-Policy",
-				"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:",
-			);
+			reply.header("Content-Security-Policy", emulatorCsp);
 		return payload;
 	});
 	app.get("/healthz", (_request, reply) =>
-		reply
-			.header("Cache-Control", "no-store")
-			.send({
-				status: "ok",
-				commit: options.commit,
-				environment: options.config.environment,
-			}),
+		reply.header("Cache-Control", "no-store").send({
+			status: "ok",
+			commit: options.commit,
+			environment: options.config.environment,
+		}),
 	);
 	app.get("/app-config.json", (_request, reply) =>
 		reply.header("Cache-Control", "no-store").send(options.config),

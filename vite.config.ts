@@ -3,6 +3,7 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 import ports from "./local-ports.json";
+import { emulatorCsp } from "./shared/emulatorCsp";
 
 export default defineConfig(({ mode }) => ({
 	plugins: [
@@ -18,8 +19,7 @@ export default defineConfig(({ mode }) => ({
 								tag: "meta",
 								attrs: {
 									"http-equiv": "Content-Security-Policy",
-									content:
-										"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:",
+									content: emulatorCsp,
 								},
 								injectTo: "head-prepend" as const,
 							},
