@@ -87,29 +87,88 @@ export function assertNextRevision(
 			"Game changed. Resynchronize before moving.",
 		);
 }
-export function serializeGame(state: GameState): GameState {
+export function serializeGame(state: OnlineGameState) {
+	const matches: Record<string, number> = {};
+	const selectedIndexes: number[] = [];
+	state.cards.forEach((card, index) => {
+		if (card.isMatched) matches[String(index)] = card.matchedByPlayerId!;
+		else if (card.isFlipped) selectedIndexes.push(index);
+	});
 	return {
-		...state,
-		cards: state.cards.map(
-			({
-				id,
-				imageId,
-				imageUrl,
-				isFlipped,
-				isMatched,
-				gradient,
-				matchedByPlayerId,
-			}) => ({
-				id,
-				imageId,
-				imageUrl,
-				isFlipped,
-				isMatched,
-				...(gradient === undefined ? {} : { gradient }),
-				...(matchedByPlayerId === undefined ? {} : { matchedByPlayerId }),
-			}),
-		),
+		cards: state.cards.map(({ id, imageId, imageUrl, gradient }) => ({
+			id,
+			imageId,
+			imageUrl,
+			...(gradient === undefined ? {} : { gradient }),
+		})),
+		currentPlayer: state.currentPlayer,
+		gameStatus: state.gameStatus,
+		syncVersion: state.syncVersion,
+		gameRound: state.gameRound,
+		...(state.lastUpdatedBy === undefined
+			? {}
+			: { lastUpdatedBy: state.lastUpdatedBy }),
+		selectedIndexes,
+		matches,
 	};
+}
+export function parseStoredOnlineState(value: unknown): OnlineGameState {
+	if (
+		!object(value) ||
+		!Array.isArray(value.cards) ||
+		!Array.isArray(value.selectedIndexes) ||
+		!object(value.matches) ||
+		Array.isArray(value.matches)
+	)
+		throw new SyncError("invalid-state", "Invalid stored game format");
+	const { cards, selectedIndexes, matches } = value;
+	const validIndex = (index: unknown): index is number =>
+		typeof index === "number" &&
+		Number.isInteger(index) &&
+		index >= 0 &&
+		index < cards.length;
+	if (
+		selectedIndexes.length > 2 ||
+		new Set(selectedIndexes).size !== selectedIndexes.length ||
+		selectedIndexes.some(
+			(index) => !validIndex(index) || String(index) in matches,
+		) ||
+		Object.entries(matches).some(
+			([key, player]) =>
+				!validIndex(Number(key)) ||
+				String(Number(key)) !== key ||
+				(player !== 1 && player !== 2),
+		)
+	)
+		throw new SyncError(
+			"invalid-state",
+			"Invalid stored move or match ownership",
+		);
+	return parseOnlineState({
+		currentPlayer: value.currentPlayer,
+		gameStatus: value.gameStatus,
+		syncVersion: value.syncVersion,
+		gameRound: value.gameRound,
+		...(value.lastUpdatedBy === undefined
+			? {}
+			: { lastUpdatedBy: value.lastUpdatedBy }),
+		cards: cards.map((card, index) => {
+			if (
+				!object(card) ||
+				Object.keys(card).some(
+					(key) => !["id", "imageId", "imageUrl", "gradient"].includes(key),
+				)
+			)
+				throw new SyncError("invalid-state", "Invalid stored card");
+			const player = matches[String(index)];
+			return {
+				...card,
+				isFlipped: player !== undefined || selectedIndexes.includes(index),
+				isMatched: player !== undefined,
+				...(player === undefined ? {} : { matchedByPlayerId: player }),
+			};
+		}),
+	});
 }
 export function parseRoom(value: unknown): Room {
 	if (

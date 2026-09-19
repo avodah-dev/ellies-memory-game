@@ -4,6 +4,7 @@ import {
 	isGameState,
 	isNewerState,
 	parseOnlineState,
+	parseStoredOnlineState,
 	parseRoom,
 	serializeGame,
 	SyncError,
@@ -115,7 +116,53 @@ describe("state protocol", () => {
 			isFlipped: true,
 			matchedByPlayerId: 1,
 		});
-		expect(serializeGame({ ...state(), cards: [card] }).cards[0]).toEqual(card);
+		expect(
+			parseStoredOnlineState(serializeGame({ ...state(), cards: [card] }))
+				.cards[0],
+		).toEqual(card);
+		expect(serializeGame({ ...state(), cards: [card] }).matches).toEqual({
+			"0": 1,
+		});
+	});
+	it("round trips the immutable deck, selection and awarded matches", () => {
+		const game = {
+			...state(),
+			lastUpdatedBy: 2,
+			cards: [
+				createTestCard({ id: "one" }),
+				createTestCard({ id: "two", isFlipped: true }),
+				createTestCard({
+					id: "three",
+					isFlipped: true,
+					isMatched: true,
+					matchedByPlayerId: 2,
+				}),
+			],
+		};
+		expect(parseStoredOnlineState(serializeGame(game))).toEqual(game);
+		const stored = serializeGame(game);
+		for (const invalid of [
+			null,
+			{},
+			{ ...stored, cards: null },
+			{ ...stored, selectedIndexes: null },
+			{ ...stored, matches: null },
+			{ ...stored, matches: [] },
+			{ ...stored, selectedIndexes: [0, 1, 2] },
+			{ ...stored, selectedIndexes: [1, 1] },
+			{ ...stored, selectedIndexes: [2] },
+			{ ...stored, selectedIndexes: [-1] },
+			{ ...stored, selectedIndexes: [0.5] },
+			{ ...stored, selectedIndexes: [3] },
+			{ ...stored, selectedIndexes: ["1"] },
+			{ ...stored, matches: { "3": 1 } },
+			{ ...stored, matches: { "01": 1 } },
+			{ ...stored, matches: { "0": 3 } },
+			{ ...stored, matches: { "0": "1" } },
+			{ ...stored, cards: [null] },
+			{ ...stored, cards: [{ ...stored.cards[0], isMatched: true }] },
+		])
+			expect(() => parseStoredOnlineState(invalid)).toThrow(SyncError);
 	});
 	it("validates room configuration and membership", () => {
 		const room = createTestRoom({

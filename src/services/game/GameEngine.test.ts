@@ -8,7 +8,6 @@ import {
 	canFlipCard,
 	checkAndFinishGame,
 	checkMatch,
-	cleanStateForPersistence,
 	createCardPairs,
 	createInitialState,
 	endTurn,
@@ -835,34 +834,6 @@ describe("Game Reset", () => {
 // ============================================
 
 describe("State Serialization", () => {
-	describe("cleanStateForPersistence", () => {
-		it("preserves isFlipped state", () => {
-			const state = createTestState({
-				cards: [createTestCard({ id: "card-1", isFlipped: true })],
-			});
-			const result = cleanStateForPersistence(state);
-			expect(result.cards[0].isFlipped).toBe(true);
-		});
-
-		it("preserves game-relevant card properties", () => {
-			const cards = [
-				createTestCard({
-					id: "card-1",
-					imageId: "img-1",
-					isFlipped: true,
-					isMatched: true,
-					matchedByPlayerId: 1,
-				}),
-			];
-			const state = createTestState({ cards });
-			const result = cleanStateForPersistence(state);
-			expect(result.cards[0].id).toBe("card-1");
-			expect(result.cards[0].isFlipped).toBe(true);
-			expect(result.cards[0].isMatched).toBe(true);
-			expect(result.cards[0].matchedByPlayerId).toBe(1);
-		});
-	});
-
 	describe("validateState", () => {
 		it("returns false for null", () => {
 			expect(validateState(null)).toBe(false);

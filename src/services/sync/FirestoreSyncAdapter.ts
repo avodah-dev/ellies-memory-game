@@ -20,6 +20,7 @@ import { PresenceService } from "./PresenceService";
 import {
 	assertNextRevision,
 	parseOnlineState,
+	parseStoredOnlineState,
 	parseRoom,
 	serializeGame,
 	SyncError,
@@ -226,14 +227,14 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			if (Object.keys(membership.playerSlots).length !== 2)
 				throw new Error("Both players must join before starting");
 			const gameRound = previous.exists()
-				? parseOnlineState(previous.data()).gameRound + 1
+				? parseStoredOnlineState(previous.data()).gameRound + 1
 				: 1;
 			const next = parseOnlineState({
-				...serializeGame(state),
+				...state,
 				syncVersion: 1,
 				gameRound,
 			});
-			tx.set(game, next);
+			tx.set(game, serializeGame(next));
 			tx.update(room, { status: "playing", lastActivity: serverTimestamp() });
 		});
 	}
@@ -242,12 +243,12 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		const snap = await getDocFromServer(
 			doc(this.services.db, "games", this.roomCode),
 		);
-		return snap.exists() ? parseOnlineState(snap.data()) : null;
+		return snap.exists() ? parseStoredOnlineState(snap.data()) : null;
 	}
 	async setState(state: GameState) {
 		if (!this.roomCode) throw new SyncError("disconnected", "Not in a room");
 		const code = this.roomCode,
-			next = parseOnlineState(serializeGame(state));
+			next = parseOnlineState(state);
 		await runTransaction(this.services.db, async (tx) => {
 			const reference = doc(this.services.db, "games", code),
 				roomRef = doc(this.services.db, "rooms", code);
@@ -255,7 +256,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 				roomSnap = await tx.get(roomRef);
 			if (!snapshot.exists())
 				throw new SyncError("conflict", "Game no longer exists");
-			const current = parseOnlineState(snapshot.data()),
+			const current = parseStoredOnlineState(snapshot.data()),
 				room = parseRoom(roomSnap.data());
 			assertNextRevision(current, next);
 			if (
@@ -264,7 +265,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 				next.lastUpdatedBy !== current.currentPlayer
 			)
 				throw new SyncError("conflict", "It is not your turn");
-			tx.set(reference, next);
+			tx.set(reference, serializeGame(next));
 			tx.update(roomRef, { lastActivity: serverTimestamp() });
 		});
 	}
@@ -286,7 +287,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 					)
 						return;
 					try {
-						callback(parseOnlineState(snapshot.data()));
+						callback(parseStoredOnlineState(snapshot.data()));
 					} catch (error) {
 						onError(error as Error);
 					}

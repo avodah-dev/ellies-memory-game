@@ -471,7 +471,4 @@ export function startGameWithCards(state: GameState, cards: Card[]): GameState {
 	};
 }
 
-export {
-	serializeGame as cleanStateForPersistence,
-	isGameState as validateState,
-} from "../sync/stateProtocol";
+export { isGameState as validateState } from "../sync/stateProtocol";

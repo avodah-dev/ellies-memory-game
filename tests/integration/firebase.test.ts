@@ -18,8 +18,13 @@ import {
 	initializeCards,
 	startGameWithCards,
 	flipCard,
+	applyMatch,
+	checkMatch,
+	checkAndFinishGame,
+	endTurn,
 } from "../../src/services/game/GameEngine";
-import type { OnlineGameState } from "../../src/types";
+import { serializeGame } from "../../src/services/sync/stateProtocol";
+import type { GameState, OnlineGameState } from "../../src/types";
 import ports from "../../local-ports.json";
 
 const clients: FirebaseServices[] = [];
@@ -41,11 +46,11 @@ const options = {
 	cardBack: "default",
 	pairCount: 4,
 };
-const initial = () =>
+const initial = (pairCount = 4) =>
 	startGameWithCards(
 		createInitialState(),
 		initializeCards(
-			Array.from({ length: 4 }, (_, i) => ({
+			Array.from({ length: pairCount }, (_, i) => ({
 				id: `image-${i}`,
 				url: `emoji-${i}`,
 			})),
@@ -62,6 +67,19 @@ async function room() {
 		color: "#654321",
 	});
 	return { host, guest, code };
+}
+async function move(
+	adapter: FirestoreSyncAdapter,
+	current: OnlineGameState,
+	next: GameState,
+) {
+	await adapter.setState({
+		...current,
+		...next,
+		syncVersion: current.syncVersion + 1,
+		lastUpdatedBy: current.currentPlayer,
+	} as OnlineGameState);
+	return (await adapter.getState()) as OnlineGameState;
 }
 async function eventually(check: () => Promise<boolean>, timeout = 10000) {
 	const end = Date.now() + timeout;
@@ -131,6 +149,7 @@ describe("real Firebase adapters and checked-in rules", () => {
 		expect((await guest.a.getRoom(code))!.status).toBe("playing");
 		const next = {
 			...flipCard(state, state.cards[0].id),
+			gameRound: state.gameRound,
 			syncVersion: 2,
 			lastUpdatedBy: 1,
 		};
@@ -142,7 +161,10 @@ describe("real Firebase adapters and checked-in rules", () => {
 			getDocFromServer(doc(outsider.c.db, "games", code)),
 		).rejects.toMatchObject({ code: "permission-denied" });
 		await expect(
-			setDoc(doc(guest.c.db, "games", code), { ...next, syncVersion: 3 }),
+			setDoc(
+				doc(guest.c.db, "games", code),
+				serializeGame({ ...next, syncVersion: 3 }),
+			),
 		).rejects.toMatchObject({ code: "permission-denied" });
 		await expect(
 			updateDoc(doc(guest.c.db, "rooms", code), { "config.pairCount": 12 }),
@@ -161,6 +183,135 @@ describe("real Firebase adapters and checked-in rules", () => {
 			received.some((s) => s.gameRound === 2 && s.syncVersion === 1),
 		);
 		stop();
+	});
+	it("rejects forged outcomes and deck edits even from the current player", async () => {
+		const { host, guest, code } = await room();
+		await host.a.startGame(code, initial());
+		const state = (await host.a.getState()) as OnlineGameState;
+		const write = (next: OnlineGameState) =>
+			setDoc(doc(host.c.db, "games", code), serializeGame(next));
+		const next = { ...state, syncVersion: 2, lastUpdatedBy: 1 };
+		for (const forged of [
+			{ ...next, gameStatus: "finished" as const },
+			{
+				...next,
+				cards: next.cards.map((c) => ({
+					...c,
+					isMatched: true,
+					isFlipped: true,
+					matchedByPlayerId: 1,
+				})),
+				gameStatus: "finished" as const,
+			},
+			{
+				...next,
+				cards: next.cards.map((c, i) =>
+					i === 0 ? { ...c, imageId: "forged", isFlipped: true } : c,
+				),
+			},
+			{
+				...next,
+				cards: next.cards.map((c, i) =>
+					i < 2
+						? { ...c, isMatched: true, isFlipped: true, matchedByPlayerId: 1 }
+						: c,
+				),
+			},
+		])
+			await expect(write(forged)).rejects.toMatchObject({
+				code: "permission-denied",
+			});
+		const flipped = await move(
+			host.a,
+			state,
+			flipCard(state, state.cards[0].id),
+		);
+		// Resetting a selection must give the other player the turn.
+		await expect(
+			write({ ...flipped, cards: state.cards, syncVersion: 3 }),
+		).rejects.toMatchObject({ code: "permission-denied" });
+		let otherTurn = await move(host.a, flipped, endTurn(flipped));
+		expect(otherTurn.currentPlayer).toBe(2);
+		const different = state.cards.find(
+			(c) => c.imageId !== state.cards[0].imageId,
+		)!;
+		for (const id of [state.cards[0].id, different.id])
+			otherTurn = await move(guest.a, otherTurn, flipCard(otherTurn, id));
+		const awardedMismatch = serializeGame({
+			...otherTurn,
+			syncVersion: otherTurn.syncVersion + 1,
+			lastUpdatedBy: 2,
+			cards: otherTurn.cards.map((c) =>
+				c.isFlipped ? { ...c, isMatched: true, matchedByPlayerId: 2 } : c,
+			),
+		});
+		await expect(
+			setDoc(doc(guest.c.db, "games", code), awardedMismatch),
+		).rejects.toMatchObject({ code: "permission-denied" });
+		const third = otherTurn.cards.find((c) => !c.isFlipped)!;
+		await expect(
+			setDoc(
+				doc(guest.c.db, "games", code),
+				serializeGame({
+					...otherTurn,
+					syncVersion: otherTurn.syncVersion + 1,
+					lastUpdatedBy: 2,
+					cards: otherTurn.cards.map((c) =>
+						c.id === third.id ? { ...c, isFlipped: true } : c,
+					),
+				}),
+			),
+		).rejects.toMatchObject({ code: "permission-denied" });
+	});
+	it("validates the largest board and permits only genuine matches through completion", async () => {
+		const { host, code } = await room();
+		await host.a.updateRoomConfig(code, { pairCount: 20 });
+		const deck = initial(20);
+		await expect(
+			host.a.startGame(code, {
+				...deck,
+				cards: deck.cards.map((c) => ({ ...c, isFlipped: true })),
+			}),
+		).rejects.toMatchObject({ code: "permission-denied" });
+		await host.a.startGame(code, deck);
+		let state = (await host.a.getState()) as OnlineGameState;
+		for (let i = 0; i < 40; i += 2) {
+			for (const id of [`card-${i}`, `card-${i + 1}`]) {
+				state = await move(host.a, state, flipCard(state, id));
+			}
+			state = await move(
+				host.a,
+				state,
+				checkAndFinishGame(applyMatch(state, checkMatch(state)!)),
+			);
+			if (i === 0)
+				await expect(
+					setDoc(
+						doc(host.c.db, "games", code),
+						serializeGame({
+							...state,
+							syncVersion: state.syncVersion + 1,
+							cards: state.cards.map((c) =>
+								c.isMatched ? { ...c, matchedByPlayerId: 2 } : c,
+							),
+						}),
+					),
+				).rejects.toMatchObject({ code: "permission-denied" });
+		}
+		expect(state.gameStatus).toBe("finished");
+		await expect(host.a.startGame(code, state)).rejects.toMatchObject({
+			code: "permission-denied",
+		});
+		await expect(
+			setDoc(
+				doc(host.c.db, "games", code),
+				serializeGame({
+					...state,
+					gameStatus: "playing",
+					syncVersion: state.syncVersion + 1,
+				} as OnlineGameState),
+			),
+		).rejects.toMatchObject({ code: "permission-denied" });
 	});
 	it("runs onDisconnect over a real RTDB connection and recovers presence", async () => {
 		const { host, guest, code } = await room();

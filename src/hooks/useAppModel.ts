@@ -1195,6 +1195,16 @@ export function useAppModel() {
 	]);
 
 	const handleNewGame = async () => {
+		// Commit the shared transition before clearing either local game state
+		// or the current route. The store exposes a failed reset to the UI.
+		if (isOnlineMode) {
+			if (!isHost) return;
+			try {
+				await resetRoomToWaiting();
+			} catch {
+				return;
+			}
+		}
 		// Close reset confirmation modal
 		setShowResetConfirmation(false);
 
@@ -1208,15 +1218,6 @@ export function useAppModel() {
 
 		// Handle online mode differently - navigate to waiting room where host can change settings
 		if (isOnlineMode) {
-			// Reset room status to 'waiting' so the waiting room shows configuration UI
-			// instead of auto-transitioning back to game
-			if (isHost) {
-				try {
-					await resetRoomToWaiting();
-				} catch (error) {
-					console.error("Failed to reset room status:", error);
-				}
-			}
 			sessionStorage.setItem("appNavigation", "true");
 			navigate({ to: "/online/waiting" });
 			return;

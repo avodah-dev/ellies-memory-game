@@ -18,6 +18,8 @@ The named Firestore database `main-firestore` stores `rooms/{code}` and `games/{
 
 `FirestoreSyncAdapter` accepts injected Firebase clients, enabling isolated anonymous users in integration tests. Joining reserves the second slot in a transaction. Guest departure deletes that map field. Starting/replaying updates the room and game atomically and increments the round. Moves require exactly the next revision, the same round, current-turn membership and a playing room; stale writers fail explicitly.
 
+Stored games separate the immutable card deck from `selectedIndexes` and a `matches` map (card index to player slot). The adapter reconstructs UI card flags from those fields. Firestore rules allow one new selection, a genuine selected pair awarded to the current player, or an end-turn transition. They preserve existing matches and only allow completion when all cards have owners. A new round starts with no selections or matches. Online New Game clears local state and changes routes only after the room reset succeeds.
+
 `useGameSynchronization` serializes optimistic writes. It accepts only confirmed snapshots, ignores older rounds and self echoes, and invalidates queued work across rounds, room changes and subscription failures. A newer revision from another tab with the same identity is applied. It never overwrites a new session with a late resynchronization result.
 
 Connection loss or a rejected write pauses actions and timers. Reconnection reads confirmed server state before resuming; explicit retry handles conflicts. If two unresolved cards belong to the reconnecting player, the controller restarts resolution. No player takes over a disconnected opponent's turn. Pending transactions already sent cannot be recalled, but transactions and revision checks prevent stale overwrites, and resynchronization uses the server result.
@@ -36,6 +38,6 @@ The local runner is also the CI entry point. `verify:release` adds a Linux/amd64
 
 ## Remaining technical boundaries
 
-Firestore rules enforce membership, top-level shape, turn authority and revisions. They do not recompute every card transition on a trusted server; this is not a cheat-resistant competitive protocol. A server-authoritative command API would be a separate change if that becomes a requirement.
+Firestore rules enforce legal transitions, membership, turn authority and revisions. The host still chooses the initial deck and clients receive all card identities; preventing players from inspecting hidden cards would require a server that reveals them only when selected. This is not a fully cheat-resistant competitive protocol.
 
 Room/game refresh currently returns users to the home flow; durable session restoration is not introduced. A local browser profile persists its anonymous identity and preferences, while emulators themselves are disposable. Physical iPad behavior, production configuration, deployments and hosted CI require their own verification. Asset/bundle optimization and further setup-controller decomposition can follow measured needs without replacing the current stack.

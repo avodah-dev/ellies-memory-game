@@ -19,6 +19,8 @@ The image contains no Firebase environment credentials. The same image is tested
 
 Both Fly apps are configured to use the existing `matchimus` Firebase project (`main-firestore` database). **Preview therefore shares live backend data**; it is not an isolated Firebase staging database. Local verification is fully isolated. Obtain the required explicit production-access authorization before live online smoke tests, Firebase rule changes or domain cutover. Use newly created test rooms for live checks.
 
+The game document format changes to an immutable deck plus selected indexes and match ownership. Existing game documents are not migrated or accepted by the new client; players need fresh rooms after cutover. The new rules also reject the old Vercel client's writes. Inspect current deployed rules after authorization and coordinate the rules/client/DNS cutover; do not deploy the new rules while expecting the old client to keep supporting online games. Retain the previous rules alongside the previous image for a coordinated rollback.
+
 The machine's Keychain registry holds `matchimus-firebase-web-config`, `matchimus-fly-deploy-token`, and `matchimus-preview-fly-deploy-token`. App-scoped Fly deploy tokens are installed as `FLY_API_TOKEN` in the matching GitHub environments and expire after 90 days. Renew them before expiry. Never put their values into files, command arguments or chat.
 
 ## Local release gate
