@@ -1,3 +1,11 @@
+import { setContext } from "../services/telemetry/core";
+import {
+	cardFields,
+	timerStart,
+	timerFire,
+	timerCancel,
+	resultsNavigate,
+} from "../services/telemetry/gameplay";
 import { useShallow } from "zustand/react/shallow";
 import { debugLog } from "../utils/debugLog";
 import { useBoardLayout } from "./useBoardLayout";
@@ -408,6 +416,13 @@ export function useAppModel() {
 	const disconnectState = useOpponentDisconnect({ timeoutSeconds: 60 });
 
 	const gameState = isOnlineMode ? onlineGame.gameState : localGame.gameState;
+	useLayoutEffect(() => {
+		const fields = cardFields(gameState.cards);
+		setContext({
+			game_round: fields.game_round,
+			sync_version: fields.sync_version,
+		});
+	}, [gameState]);
 
 	// Derive players from presence data (online) or settings (local)
 	const players = useMemo(() => {
@@ -425,12 +440,21 @@ export function useAppModel() {
 		return { winner: null, isTie: false };
 	}, [gameState.gameStatus, gameState.cards, players]);
 
+	const resultsState = useRef(gameState);
+	resultsState.current = gameState;
 	// Navigate to game-over route when game finishes
 	useEffect(() => {
 		if (gameState.gameStatus === "finished" && currentPath !== "/game-over") {
 			sessionStorage.setItem("appNavigation", "true");
-			const timer = setTimeout(() => navigate({ to: "/game-over" }), 1200);
-			return () => clearTimeout(timer);
+			const trace = timerStart("results", resultsState.current, 1200);
+			const timer = setTimeout(() => {
+				timerFire(trace);
+				return resultsNavigate(trace, navigate({ to: "/game-over" }));
+			}, 1200);
+			return () => {
+				timerCancel(trace, "effect-cleanup");
+				clearTimeout(timer);
+			};
 		}
 	}, [gameState.gameStatus, currentPath, navigate]);
 

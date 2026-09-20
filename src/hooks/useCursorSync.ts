@@ -1,3 +1,4 @@
+import { counters } from "../services/telemetry/core";
 /**
  * useCursorSync - Hook for syncing cursor positions in online mode
  *
@@ -81,6 +82,7 @@ export function useCursorSync(
 			roomCode,
 			opponentOdahId,
 			(position) => {
+				counters.cursorRx++;
 				setOpponentCursor(position);
 			},
 		);
@@ -107,6 +109,7 @@ export function useCursorSync(
 
 			// Only send if within grid bounds (8 columns, 5 rows)
 			if (gridX >= 0 && gridX <= 8 && gridY >= 0 && gridY <= 5) {
+				counters.cursorTx++;
 				cursorServiceRef.current.updatePosition(gridX, gridY);
 			} else {
 				// Clear position if outside grid bounds

@@ -1,3 +1,5 @@
+import { counters } from "../services/telemetry/core";
+import { trackPointer, trackCardClick } from "../services/telemetry/gameplay";
 import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card as CardType } from "../types";
 
@@ -22,6 +24,7 @@ export const Card = ({
 	forceGameplaySize = false,
 	forceGameplayBackground = false,
 }: CardProps) => {
+	counters.cardRenders++;
 	// Calculate font size based on card size and emoji size percentage
 	// emojiSizePercentage is a percentage (e.g., 72 means 72% of card size)
 	const fontSize = Math.round((size * emojiSizePercentage) / 100);
@@ -52,7 +55,13 @@ export const Card = ({
 			disabled={card.isMatched}
 			data-card-id={card.id}
 			data-allow-touchmove
-			onClick={onClick}
+			onPointerDown={(event) => trackPointer(card.id, "down", event)}
+			onPointerUp={(event) => trackPointer(card.id, "up", event)}
+			onPointerCancel={(event) => trackPointer(card.id, "cancel", event)}
+			onClick={(event) => {
+				trackCardClick(card.id, event);
+				onClick();
+			}}
 			className={`relative transition-transform duration-500 transform-gpu ${card.isMatched ? "cursor-default" : "cursor-pointer"}`}
 			style={{
 				width: `${size}px`,

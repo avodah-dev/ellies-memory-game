@@ -1,3 +1,18 @@
+import { track } from "../services/telemetry/core";
+import {
+	stateFields,
+	rememberState,
+	stateApplied,
+	classifyFlipRejection,
+	trackBlockedFlip,
+	trackFlip,
+	trackFinish,
+	timerStart,
+	timerFire,
+	timerCancel,
+	cancelMatchTimer,
+} from "../services/telemetry/gameplay";
+import { connectionRound } from "../services/telemetry/connection";
 import { debugLog } from "../utils/debugLog";
 import type { GameSettings as PersistedSettings } from "../stores/settingsStore";
 /**
@@ -13,7 +28,13 @@ import type { GameSettings as PersistedSettings } from "../stores/settingsStore"
  * 4. EffectManager handles side effects (TTS, sounds) in a pluggable way
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import type { EffectManager } from "../services/effects/EffectManager";
 import {
 	applyMatch,
@@ -167,6 +188,7 @@ export function useGameController(
 			const next =
 				typeof value === "function" ? value(stateRef.current) : value;
 			stateRef.current = next;
+			stateApplied(next, "controller");
 			reactSetGameState(next);
 		},
 		[],
@@ -199,6 +221,17 @@ export function useGameController(
 	// ============================================
 
 	const isOnlineMode = mode === "online";
+	useLayoutEffect(() => {
+		rememberState(gameState);
+		connectionRound(roomCode, gameState);
+		track("mm.game.state", {
+			...stateFields(gameState),
+			phase: "committed",
+			mode,
+			local_slot: localPlayerSlot ?? null,
+			online_ready: onlineReady,
+		});
+	}, [gameState, roomCode, mode, localPlayerSlot, onlineReady]);
 	const isAuthoritative =
 		!isOnlineMode || localPlayerSlot === gameState.currentPlayer;
 
@@ -239,12 +272,23 @@ export function useGameController(
 	// ============================================
 
 	const endTurn = useCallback(() => {
+		track("mm.game.endturn", {
+			...stateFields(stateRef.current),
+			result: pausedRef.current
+				? "paused"
+				: !onlineReady
+					? "not-ready"
+					: isOnlineMode && localPlayerSlot !== stateRef.current.currentPlayer
+						? "not-your-turn"
+						: "accepted",
+		});
 		if (
 			pausedRef.current ||
 			!onlineReady ||
 			(isOnlineMode && localPlayerSlot !== stateRef.current.currentPlayer)
 		)
 			return;
+		cancelMatchTimer(matchCheckTimeoutRef, "end-turn");
 		// Clear any pending match check
 		if (matchCheckTimeoutRef.current) {
 			clearTimeout(matchCheckTimeoutRef.current);
@@ -284,6 +328,10 @@ export function useGameController(
 		(_selectedIds: string[], currentState: GameState) => {
 			// Double-check authority
 			if (isOnlineMode && localPlayerSlot !== currentState.currentPlayer) {
+				track("mm.game.match", {
+					...stateFields(currentState),
+					result: "lost-authority",
+				});
 				console.warn("[MATCH CHECK] Lost authority, aborting");
 				return;
 			}
@@ -292,12 +340,20 @@ export function useGameController(
 
 			const matchResult = checkMatch(currentState);
 			if (!matchResult) {
+				track("mm.game.match", {
+					...stateFields(currentState),
+					result: "missing-selected",
+				});
 				console.error("[MATCH CHECK] Could not find selected cards");
 				isCheckingMatchRef.current = false;
 				return;
 			}
 
 			const { isMatch, firstCard, secondCard } = matchResult;
+			track("mm.game.match", {
+				...stateFields(currentState),
+				result: isMatch ? "match" : "mismatch",
+			});
 			const cardIds: [string, string] = [firstCard.id, secondCard.id];
 			const currentPlayerId = currentState.currentPlayer;
 			// Use ref to always get latest player names
@@ -312,6 +368,7 @@ export function useGameController(
 					applyMatch(currentState, matchResult),
 				);
 
+				trackFinish(matchedState);
 				setGameState(matchedState);
 				if (isOnlineMode) {
 					syncToFirestore(matchedState, `match:complete`);
@@ -370,24 +427,75 @@ export function useGameController(
 	const flipCard = useCallback(
 		(cardId: string) => {
 			const gameState = stateRef.current;
-			if (pausedRef.current || !onlineReady) return;
+			if (pausedRef.current || !onlineReady) {
+				trackBlockedFlip(
+					gameState,
+					cardId,
+					pausedRef.current,
+					onlineReady,
+					isCheckingMatchRef.current,
+					localPlayerSlot,
+					mode,
+				);
+				return;
+			}
 			// Online mode: strict turn enforcement
 			if (isOnlineMode && localPlayerSlot !== gameState.currentPlayer) {
+				trackFlip(
+					gameState,
+					cardId,
+					"not-your-turn",
+					pausedRef.current,
+					onlineReady,
+					isCheckingMatchRef.current,
+					localPlayerSlot,
+					mode,
+				);
 				debugLog("[FLIP] Not your turn");
 				return;
 			}
 
 			// Prevent during match check
 			if (isCheckingMatchRef.current) {
+				trackFlip(
+					gameState,
+					cardId,
+					"checking-match",
+					pausedRef.current,
+					onlineReady,
+					isCheckingMatchRef.current,
+					localPlayerSlot,
+					mode,
+				);
 				debugLog("[FLIP] Match check in progress");
 				return;
 			}
 
 			// Validate flip using GameEngine
 			if (!canFlipCard(gameState, cardId)) {
+				trackFlip(
+					gameState,
+					cardId,
+					classifyFlipRejection(gameState, cardId),
+					pausedRef.current,
+					onlineReady,
+					isCheckingMatchRef.current,
+					localPlayerSlot,
+					mode,
+				);
 				return;
 			}
 
+			trackFlip(
+				gameState,
+				cardId,
+				"accepted",
+				pausedRef.current,
+				onlineReady,
+				isCheckingMatchRef.current,
+				localPlayerSlot,
+				mode,
+			);
 			// Apply flip using GameEngine
 			const newState = engineFlipCard(gameState, cardId);
 			setGameState(newState);
@@ -403,6 +511,7 @@ export function useGameController(
 			onlineReady,
 			setGameState,
 			pausedRef,
+			mode,
 			syncToFirestore,
 		],
 	);
@@ -418,11 +527,19 @@ export function useGameController(
 		if (gameState.cards.filter((c) => c.isFlipped && !c.isMatched).length !== 2)
 			return;
 		isCheckingMatchRef.current = true;
+		const timerTrace = timerStart(
+			"match",
+			stateRef.current,
+			settings.flipDuration,
+			matchCheckTimeoutRef,
+		);
 		matchCheckTimeoutRef.current = setTimeout(() => {
+			timerFire(timerTrace);
 			matchCheckTimeoutRef.current = null;
 			checkForMatch([], stateRef.current);
 		}, settings.flipDuration);
 		return () => {
+			timerCancel(timerTrace, "effect-cleanup");
 			if (matchCheckTimeoutRef.current)
 				clearTimeout(matchCheckTimeoutRef.current);
 			matchCheckTimeoutRef.current = null;
@@ -438,6 +555,7 @@ export function useGameController(
 		checkForMatch,
 	]);
 	const resetGame = useCallback(() => {
+		cancelMatchTimer(matchCheckTimeoutRef, "reset");
 		// Clear timeouts
 		if (matchCheckTimeoutRef.current) {
 			clearTimeout(matchCheckTimeoutRef.current);
@@ -445,6 +563,10 @@ export function useGameController(
 		}
 		isCheckingMatchRef.current = false;
 		++generation.current;
+		track("mm.sync.epoch", {
+			epoch: generation.current,
+			reason: "controller-reset-or-full-state",
+		});
 		if (animationTimer.current) clearTimeout(animationTimer.current);
 		setIsAnimating(false);
 		setIsAnimatingCards(false);
@@ -479,6 +601,7 @@ export function useGameController(
 			images: { id: string; url: string; gradient?: string }[],
 			startPlaying: boolean = false,
 		) => {
+			cancelMatchTimer(matchCheckTimeoutRef, "initialize");
 			// Cancel any pending match check
 			if (matchCheckTimeoutRef.current) {
 				clearTimeout(matchCheckTimeoutRef.current);
