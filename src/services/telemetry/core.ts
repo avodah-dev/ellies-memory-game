@@ -146,6 +146,7 @@ export function flushNow() {
 						environment: config.environment,
 						commit: __BUILD_INFO__.commitHash,
 						$process_person_profile: false,
+						$geoip_disable: true,
 					},
 				}),
 			);
