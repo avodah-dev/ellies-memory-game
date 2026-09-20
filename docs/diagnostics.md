@@ -2,19 +2,23 @@
 
 ## Clock contract
 
-Use **RTDB time only** for merged room timelines. `t_server` is `t_wall + offset_rtdb_ms` when `clock_reference = 'rtdb'`; otherwise it is null and the reference is `uncalibrated`. Never coalesce HTTP, RTDB and raw device time into one timeline. Older builds without `clock_reference` do not satisfy this contract; capture a new baseline after both devices reload the instrumentation build.
+Use **Fly server time anchored to the browser monotonic clock**, identified by `clock_reference = 'fly-monotonic'`. The client wall clock and RTDB offset do not enter the timestamp calculation:
 
-Every event carries both `offset_http_ms` and `offset_rtdb_ms`, the HTTP sample RTT (`clock_rtt_ms`), calibration ages (`clock_http_age_ms`, `clock_rtdb_age_ms`), and the selected reference. An unavailable offset/age is null, not zero. A genuine numeric zero offset is valid. The queue captures an immutable calibration reference alongside the event; a sample received before drain cannot retroactively calibrate an earlier event.
+`t_server = clock_anchor_server_ms + (t_mono - clock_anchor_mono_ms)`
 
-The room connection hook observes `.info/serverTimeOffset` without changing gameplay readiness. A finite sample and the existing connected signal are both required. Disconnect, listener failure and room cleanup invalidate calibration; reconnect can calibrate again. Online rooms can still have uncalibrated events, especially during startup and outages. Local-only play without an RTDB connection remains uncalibrated. Keep these events in the per-device sequence audit; do not silently substitute another clock when merging them.
+Five sequential no-store `/diag/ping` samples select the lowest RTT in each burst. The server stamps `now` inside the response handler; its instant lies between client request start and completed response-body receipt. The client anchors that server time at the midpoint of the two monotonic readings. This does **not** assume symmetric network delay: the possible network error at the anchor is bounded by half of that measured RTT, plus a two-millisecond timestamp precision allowance.
 
-RTDB offset is an estimate, not a precision latency measurement. [Firebase documents that network latency affects its accuracy](https://firebase.google.com/docs/database/web/offline-capabilities#clock-skew), making it most useful for detecting discrepancies above one second. The HTTP ping RTT is **not** an uncertainty bound for RTDB calibration. Use `performance.now()` durations for same-device latency, and state clock uncertainty when reporting cross-device timings. Display sample ages and flag old samples; the current implementation does not silently expire or replace them while connected.
+Events expose `clock_network_bound_ms` (RTT/2 + 2 ms), `clock_http_age_ms`, `clock_sample_id` (unique within page session), both anchor values, and `clock_uncertainty_ms`. The latter adds an explicit **1000 ppm clock-rate budget** (one millisecond per second of sample age). `t_server_lower_ms` and `t_server_upper_ms` are estimate ± uncertainty. This is a **conditional measurement interval**, not certified UTC accuracy: it assumes stable synchronized Fly server clocks, timer quantization within the precision allowance, and monotonic rate error no greater than the reported `clock_rate_budget_ppm`. The rate budget is a conservative declared assumption, not a rate accuracy measured by the browser. Never relabel RTT/2 alone as a perpetual hard bound. If those assumptions cannot be accepted for a capture, these estimates cannot prove its absolute latency.
 
-Both offsets are **server-minus-device corrections**: an offset of −14500 ms means the device clock is approximately 14.5 seconds fast relative to that reference. On 2026-09-20, Claude confirmed this Mac was 14.508 seconds fast using SNTP and independent HTTP references; the approximately −14.5-second offsets were device clock error, not Fly drift. Correcting the device clock during an open session can invalidate cached calibration; reload before recording the baseline.
+Calibration runs at boot, every 30 seconds after a completed burst, and on visibility/online/pageshow transitions. A one-second watchdog detects wall-versus-monotonic discontinuities above 250 ms and scheduling gaps above five seconds; these invalidate the current anchor and request a new burst. Hidden/offline/pagehide states abort calibration and do not send pings. No overlapping bursts; three-second deadline per request. Samples expire after 60 seconds. Missing, expired, negative-age, or discontinuous calibration produces null server times and `uncalibrated`; there is no RTDB or raw wall-time substitution. Events captured before calibration remain uncalibrated even if drained after it. The hot capture path still holds one immutable calibration reference; all timestamp arithmetic happens during drain.
 
-HTTP offset remains useful for Connection Test's RTT/offset display. `fly_rtdb_skew_ms = offset_http_ms - offset_rtdb_ms` is an estimated Fly-minus-RTDB clock difference, emitted on every event including health when both samples exist. A negative value means the sampled Fly time was behind the sampled RTDB time. Measurements may have different ages and asymmetric network delays; this is a diagnostic signal, not proof of VM drift or a basis for correcting timestamps.
+`mm.clock.calibration` records `reason` (boot, periodic, visibility, online, offline, pageshow, pagehide, clock-step, scheduler-gap) and `status` (ok, failed, invalidated), plus the selected sample/bounds in its standard envelope. Audit this history and both devices' calibration coverage before accepting a baseline. For cross-device differences, subtract endpoints: `latency_lower = receiver_lower - sender_upper`, `latency_upper = receiver_upper - sender_lower`. Show these intervals alongside medians/p95; retain negative values. Filter explicitly by a maximum uncertainty suitable for the question (the examples use 100 ms per endpoint); report how many observations that excludes. Same-device `ms_*` durations remain independent of cross-device calibration.
 
-`fly.preview.toml` configures `auto_stop_machines = "stop"` and zero warm machines. Production keeps one machine warm. Stopping differs from suspending; these settings do not establish why a clock offset occurred. No Fly lifecycle setting is changed by diagnostics.
+[Monotonic browser time resists wall-clock adjustments but has platform-dependent sleep behavior](https://developer.mozilla.org/en-US/docs/Web/API/Performance/now). Wall time is used only as a discontinuity veto and to report server-minus-device clock error, never added to a merged timestamp. A Mac clock that is 14.5 seconds fast therefore does not shift the timeline. If that clock is corrected mid-session, affected events become uncalibrated and the watchdog recalibrates automatically. Reload both devices onto this build before the baseline.
+
+RTDB `.info/serverTimeOffset` remains an independent diagnostic observation: [Firebase documents its latency-sensitive accuracy](https://firebase.google.com/docs/database/web/offline-capabilities#clock-skew). `offset_http_ms`, `offset_rtdb_ms`, their ages and `fly_rtdb_skew_ms` remain available for comparison, but none are a substitute timeline reference. Offsets are server-minus-device corrections. The observed −14.5-second offsets on 2026-09-20 were traced by SNTP to this Mac's fast clock, not Fly drift.
+
+The ingestion proxy retains raw bytes. A batch receipt timestamp would date delivery to the proxy, not event capture; reconstructing capture time would still need an uplink/clock-rate model. This release uses identical capture-time estimates in PostHog and IndexedDB, preserving retry UUIDs and original event timestamps. Calibration is enabled only in hosted environments with telemetry on; emulator tests remain local and use deterministic clock mocks.
 
 ## Drain health
 
@@ -27,7 +31,7 @@ HTTP offset remains useful for Connection Test's RTT/offset display. `fly_rtdb_s
 
 ## HogQL queries
 
-Replace `ROOM` with the new room code. Every event-table scan has a seven-day timestamp bound; narrow it to the capture window and environment/build for a real investigation, especially if a room code has been reused. PostHog `timestamp` follows device wall time for these events: allow clock-error margin at the window edges. The bound limits scanned data; it does not calibrate event ordering. First check calibration coverage for **both** devices/page sessions; an empty or one-sided calibrated timeline is not a successful baseline. These query examples must be exercised against the released schema before baseline sign-off.
+Replace `ROOM` with the new room code. Every event-table scan has a seven-day timestamp bound; narrow it to the capture window and environment/build for a real investigation, especially if a room code has been reused. PostHog `timestamp` follows device wall time for these events: allow clock-error margin at the window edges. The bound limits scanned data; it does not calibrate event ordering. First check calibration coverage for **both** devices/page sessions; an empty or one-sided calibrated timeline is not a successful baseline. The previous 13 query blocks were validated against the prior schema by Claude. Changed clock queries and the new headline query below require fresh validation before baseline sign-off.
 
 ```sql
 SELECT
@@ -48,20 +52,23 @@ Merged timeline, using one reference only:
 
 ```sql
 SELECT
-    properties.t_server AS rtdb_time_ms,
+    properties.t_server AS estimated_fly_time_ms,
     properties.device_id AS device,
     properties.page_session_id AS session,
     properties.seq AS seq,
     event,
-    properties.offset_rtdb_ms AS rtdb_offset_ms,
-    properties.clock_rtdb_age_ms AS calibration_age_ms,
+    properties.clock_uncertainty_ms AS uncertainty_ms,
+    properties.t_server_lower_ms AS lower_ms,
+    properties.t_server_upper_ms AS upper_ms,
+    properties.clock_sample_id AS calibration_sample,
+    properties.clock_http_age_ms AS calibration_age_ms,
     properties.fly_rtdb_skew_ms AS fly_rtdb_skew_ms
 FROM events
 WHERE timestamp > now() - INTERVAL 7 DAY
   AND event LIKE 'mm.%'
   AND properties.room_code = 'ROOM'
-  AND properties.clock_reference = 'rtdb'
-  AND properties.offset_rtdb_ms IS NOT NULL
+  AND properties.clock_reference = 'fly-monotonic'
+  AND properties.clock_uncertainty_ms <= 100
   AND properties.t_server IS NOT NULL
 ORDER BY toFloat(properties.t_server), device, session, toInt(properties.seq)
 ```
@@ -260,7 +267,7 @@ WHERE timestamp > now() - INTERVAL 7 DAY
 GROUP BY device
 ```
 
-Join a write result to remote acceptance on room, game_round and sync_version, with **different device IDs**, and require `clock_reference='rtdb'` on both rows. Join remote acceptance to `mm.state.applied` and `mm.render.painted` on the receiving device/page session and revision, using the paint's apply ID to disambiguate reapplications. Use `ms_apply_to_paint` directly for that same-device duration. Exclude `phase='cancelled-before-task'` from latency aggregates but count those cancellations when investigating skipped states. Compare the complete tuple, not sync_version alone: replay resets revision numbers.
+Join a write result to remote acceptance on room, game_round and sync_version, with **different device IDs**, and require `clock_reference='fly-monotonic'` on both rows. Join remote acceptance to `mm.state.applied` and `mm.render.painted` on the receiving device/page session and revision, using the paint's apply ID to disambiguate reapplications. Use `ms_apply_to_paint` directly for that same-device duration. Exclude `phase='cancelled-before-task'` from latency aggregates but count those cancellations when investigating skipped states. Compare the complete tuple, not sync_version alone: replay resets revision numbers.
 
 Dropped work and snapshot decisions, grouped separately by observation layer. Raw candidates are not accepted snapshots; do not add counts across layers as if they represented different delivered states.
 
@@ -312,29 +319,35 @@ Remote delivery and paint medians/p95, reported separately for each writer/recei
 WITH delivery AS (
 SELECT w.device AS writer, r.device AS receiver, r.session AS receiver_session, w.round, w.version,
        r.accepted_at - w.committed_at AS estimated_commit_to_accept_ms,
+       r.accepted_at - w.committed_at - r.uncertainty_ms - w.uncertainty_ms AS lower_ms,
+       r.accepted_at - w.committed_at + r.uncertainty_ms + w.uncertainty_ms AS upper_ms,
        p.painted_mono - r.accepted_mono AS accept_to_paint_ms,
        p.apply_to_paint_ms
 FROM (
     SELECT properties.device_id AS device, properties.game_round AS round,
            properties.sync_version AS version,
-           min(toFloat(properties.t_server)) AS committed_at
+           min(toFloat(properties.t_server)) AS committed_at,
+           argMin(toFloat(properties.clock_uncertainty_ms), toFloat(properties.t_server)) AS uncertainty_ms
     FROM events
     WHERE timestamp > now() - INTERVAL 7 DAY
       AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
-      AND properties.ok = true AND properties.clock_reference = 'rtdb'
+      AND properties.ok = true AND properties.clock_reference = 'fly-monotonic'
       AND properties.t_server IS NOT NULL
+      AND properties.clock_uncertainty_ms <= 100
     GROUP BY device, round, version
 ) AS w
 JOIN (
     SELECT properties.device_id AS device, properties.page_session_id AS session,
            properties.game_round AS round, properties.sync_version AS version,
            min(toFloat(properties.t_server)) AS accepted_at,
+           argMin(toFloat(properties.clock_uncertainty_ms), toFloat(properties.t_server)) AS uncertainty_ms,
            min(toFloat(properties.t_mono)) AS accepted_mono
     FROM events
     WHERE timestamp > now() - INTERVAL 7 DAY
       AND event = 'mm.sync.snapshot.gate' AND properties.room_code = 'ROOM'
-      AND properties.decision = 'accepted' AND properties.clock_reference = 'rtdb'
+      AND properties.decision = 'accepted' AND properties.clock_reference = 'fly-monotonic'
       AND properties.t_server IS NOT NULL
+      AND properties.clock_uncertainty_ms <= 100
     GROUP BY device, session, round, version
 ) AS r ON w.round = r.round AND w.version = r.version
 JOIN (
@@ -356,6 +369,10 @@ SELECT writer, receiver, receiver_session,
        count() AS samples,
        quantile(0.5)(estimated_commit_to_accept_ms) AS median_commit_to_accept_ms,
        quantile(0.95)(estimated_commit_to_accept_ms) AS p95_commit_to_accept_ms,
+       quantile(0.5)(lower_ms) AS median_lower_ms,
+       quantile(0.5)(upper_ms) AS median_upper_ms,
+       quantile(0.95)(lower_ms) AS p95_lower_ms,
+       quantile(0.95)(upper_ms) AS p95_upper_ms,
        quantile(0.5)(accept_to_paint_ms) AS median_accept_to_paint_ms,
        quantile(0.95)(accept_to_paint_ms) AS p95_accept_to_paint_ms
 FROM delivery
@@ -372,7 +389,7 @@ Averaging the two directional medians can cancel a constant relative clock bias.
 
 For RAWR, the reported medians were −4 ms host→guest (15 samples) and +135 ms guest→host (3 samples). Their midpoint is 65.5 ms and half-difference 69.5 ms. Those arithmetic results alone establish neither “true delivery = 65.5 ms” nor “each device has ±69.5 ms offset error.” The reported Fly-minus-RTDB estimates differed by 62.2 ms (guest 81.9 ms, host 19.7 ms), consistent with differing calibration estimates; HTTP sample delay/asymmetry and sample ages also contribute, so this is not independent ground truth for RTDB error.
 
-The current RTDB offset observer exposes a scalar offset without a paired RTT measurement. The Connection Test's acknowledged-write RTT is a different operation and cannot rank the accuracy of those offset observations. Adding `fly_rtdb_skew_ms` to RTDB-calibrated time would algebraically replace its correction with the HTTP correction (`t_wall + offset_http_ms`); it is not an independent improvement to the RTDB reference. Retain RTDB as the single merged reference for this instrumentation release, keep directional estimates labelled, and prioritize same-device monotonic durations. Any future calibration change needs its own measured validation.
+The current RTDB offset observer exposes a scalar offset without a paired RTT measurement. The Connection Test's acknowledged-write RTT is a different operation and cannot rank the accuracy of those offset observations. Adding `fly_rtdb_skew_ms` to RTDB-calibrated time would algebraically replace its correction with the HTTP correction (`t_wall + offset_http_ms`); it is not an independent improvement to the RTDB reference. Those RAWR results predate the Fly-monotonic contract above. Do not include them in the new baseline or mix their RTDB-calibrated times with this release.
 
 ### Verified RAWR smoke measurements
 
@@ -392,7 +409,7 @@ The paint measure is an estimated paint opportunity, not physical display comple
 
 Delayed writes, timers and paint tasks retain the room/role context captured when scheduled, so completing or cancelling after a room change cannot assign them to the new room.
 
-Reconnect invalidates the previous RTDB candidate. Calibration remains absent until a new offset observation is available; repeated connection notifications retain the observation's original age. Diagnostic adapter callbacks are isolated: a failed trace start explicitly disables that trace, and other observer exceptions cannot abort a transaction, replace its error, prevent snapshot delivery or stop cleanup. Full-state replacement and reset generation bumps carry the same synchronization-session ID as queued writes.
+Reconnect invalidates the previous RTDB candidate. The diagnostic RTDB offset remains absent until a new offset observation is available; repeated connection notifications retain the observation's original age. Diagnostic adapter callbacks are isolated: a failed trace start explicitly disables that trace, and other observer exceptions cannot abort a transaction, replace its error, prevent snapshot delivery or stop cleanup. Full-state replacement and reset generation bumps carry the same synchronization-session ID as queued writes.
 
 The batch sink keeps its in-flight guard until the response body has been consumed, not merely until response headers arrive. This prevents adjacent diagnostic keepalive batches from overlapping that transport budget; the browser's keepalive quota is also shared with other traffic. Existing backoff and UUID retention are unchanged. Health counts failed attempts cumulatively even when a later send succeeds; audit successful batches/PostHog sequence IDs before concluding that an event was lost.
 
@@ -413,7 +430,7 @@ Open **Settings → Advanced → Connection test**, then choose Start test. The 
 
 The reserved room code `0000` cannot be allocated by the letter-only room generator. Only the current user's scratch cursor is written. The RTDB cancellation design uses [Firebase's documented server acknowledgement and disconnect behavior](https://firebase.google.com/docs/reference/js/database); [updateCurrentUser](https://firebase.google.com/docs/reference/js/auth#updatecurrentuser) copies the current user into the isolated in-memory Auth instance. No Firebase/RTDB rules change is required or included. Parallel tests in separate tabs sharing a UID share the scratch path, so run one Connection Test per device at a time; the probe measures acknowledgement, not an echo of scratch contents.
 
-Connection Test reports `measured_http_offset_ms` and `measured_rtdb_offset_ms` separately from the event envelope's existing clock calibration. Both are server-minus-device corrections. The test never overwrites gameplay calibration or uses HTTP time to merge room timelines. Per-probe measurements may be newer than the envelope's offsets; after a device-clock adjustment reload before a baseline.
+Connection Test reports `measured_http_offset_ms` and `measured_rtdb_offset_ms` separately from the event envelope's existing clock calibration. Both are server-minus-device corrections. The test never overwrites the telemetry calibration; periodic Fly-monotonic calibration runs independently. Per-probe measurements may be newer than the envelope's offsets; after a device-clock adjustment reload before a baseline.
 
 Events use the existing bounded telemetry sinks: emulator stays local, hosted environments send diagnostic batches when telemetry is on. They retain room/role/round context from the start of the test even if the player navigates while it runs. No probe credentials, network URLs or arbitrary error messages are recorded.
 
@@ -438,3 +455,81 @@ ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
 ```
 
 Run lobby and mid-game tests on both real devices for the baseline. Synthetic browser taps verify delivery and isolation, not iPad hardware timing. Local Vite dev/preview servers expose the same JSON ping contract; the container suite exercises Fastify's actual endpoint. Unit checks cover timeout/cancellation and server-ack sequencing; the two-browser flow verifies successful lobby probes, touch recording, mid-game snapshot delivery and cancellation while zero non-loopback requests and console-error gates remain active.
+
+## Headline: host click to guest paint opportunity
+
+This joins the actual click event to its successful write and the other device's first paint opportunity for that revision. It does not use either client's wall clock, nor the writer's acknowledgement as the start time. For touch-down-to-paint, join the click's `gesture_id` to its pointer down in the same device/page session; do not assume every click has a pointer gesture. The paint probe estimates a browser paint opportunity, not physical pixels on the display.
+
+The 100 ms endpoint-uncertainty cap is an explicit analysis choice. Inspect calibration coverage and excluded counts separately; absence is not zero latency. Report lower/upper intervals, with the clock-rate/precision assumptions in the clock contract, alongside the midpoint estimate.
+
+```sql
+WITH samples AS (
+SELECT i.device AS writer, p.device AS receiver, p.session AS receiver_session,
+       w.round, w.version,
+       p.at - i.at AS click_to_paint_ms,
+       p.lower - i.upper AS lower_ms,
+       p.upper - i.lower AS upper_ms
+FROM (
+    SELECT properties.device_id AS device, properties.page_session_id AS session,
+           properties.input_id AS input,
+           min(toFloat(properties.t_server)) AS at,
+           argMin(toFloat(properties.t_server_lower_ms), toFloat(properties.seq)) AS lower,
+           argMin(toFloat(properties.t_server_upper_ms), toFloat(properties.seq)) AS upper
+    FROM events
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND event = 'mm.input.click' AND properties.room_code = 'ROOM'
+      AND properties.clock_reference = 'fly-monotonic'
+      AND properties.clock_uncertainty_ms <= 100 AND properties.t_server IS NOT NULL
+    GROUP BY device, session, input
+) AS i
+JOIN (
+    SELECT DISTINCT properties.device_id AS device, properties.page_session_id AS session,
+           properties.input_id AS input, properties.game_round AS round,
+           properties.sync_version AS version
+    FROM events
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
+      AND properties.ok = true AND properties.input_id IS NOT NULL
+) AS w ON i.device = w.device AND i.session = w.session AND i.input = w.input
+JOIN (
+    SELECT properties.device_id AS device, properties.page_session_id AS session,
+           properties.game_round AS round, properties.sync_version AS version,
+           argMin(toFloat(properties.t_server), toFloat(properties.seq)) AS at,
+           argMin(toFloat(properties.t_server_lower_ms), toFloat(properties.seq)) AS lower,
+           argMin(toFloat(properties.t_server_upper_ms), toFloat(properties.seq)) AS upper
+    FROM events
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND event = 'mm.render.painted' AND properties.room_code = 'ROOM'
+      AND properties.phase = 'after-frame-task'
+      AND properties.clock_reference = 'fly-monotonic'
+      AND properties.clock_uncertainty_ms <= 100 AND properties.t_server IS NOT NULL
+    GROUP BY device, session, round, version
+) AS p ON w.round = p.round AND w.version = p.version
+WHERE i.device != p.device
+)
+SELECT writer, receiver, receiver_session, count() AS samples,
+       quantile(0.5)(click_to_paint_ms) AS median_ms,
+       quantile(0.95)(click_to_paint_ms) AS p95_ms,
+       quantile(0.5)(lower_ms) AS median_lower_ms,
+       quantile(0.5)(upper_ms) AS median_upper_ms,
+       quantile(0.95)(lower_ms) AS p95_lower_ms,
+       quantile(0.95)(upper_ms) AS p95_upper_ms
+FROM samples
+GROUP BY writer, receiver, receiver_session
+```
+
+Clock calibration history (includes lobby samples before a room exists):
+
+```sql
+SELECT properties.device_label, properties.page_session_id, properties.seq,
+       properties.reason, properties.status, properties.clock_sample_id,
+       properties.clock_anchor_server_ms, properties.clock_anchor_mono_ms,
+       properties.clock_rtt_ms, properties.clock_http_age_ms,
+       properties.clock_network_bound_ms, properties.clock_uncertainty_ms,
+       properties.clock_wall_discontinuity_ms, properties.offset_http_ms
+FROM events
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event = 'mm.clock.calibration'
+  AND properties.page_session_id = 'SESSION'
+ORDER BY toInt(properties.seq)
+```

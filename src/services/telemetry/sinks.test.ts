@@ -34,7 +34,7 @@ function event(i = 0, text = ""): PreparedEvent {
 			t_mono: i,
 			t_wall: i,
 			t_server: i,
-			clock_reference: "rtdb",
+			clock_reference: "fly-monotonic",
 			environment: "preview",
 			commit: "abc",
 			$process_person_profile: false,

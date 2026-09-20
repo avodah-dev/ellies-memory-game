@@ -1,7 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
+	CLOCK_MAX_AGE_MS,
 	clockProperties,
 	getOffsets,
+	invalidateHttpClock,
 	measureHttpOffset,
 	resetClockForTests,
 	setRtdbOffset,
@@ -10,75 +12,115 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	resetClockForTests();
 });
-it("chooses the lowest RTT of five samples and preserves independent RTDB offset", async () => {
-	vi.spyOn(Date, "now").mockReturnValue(1000);
-	setRtdbOffset(15);
-	const clock = vi.spyOn(performance, "now");
-	for (const rtt of [100, 40, 20, 80, 60])
-		clock.mockReturnValueOnce(0).mockReturnValueOnce(rtt);
-	const network = vi
-		.fn<typeof fetch>()
-		.mockImplementation(async () => new Response('{"now":1050}'));
+async function calibrate() {
+	let mono = 100;
+	vi.spyOn(performance, "now").mockImplementation(() => mono);
+	vi.spyOn(Date, "now").mockImplementation(() => mono + 14500);
+	const network = vi.fn<typeof fetch>().mockImplementation(async () => {
+		mono += 20;
+		return new Response('{"now":100000}');
+	});
 	await measureHttpOffset(undefined, network);
-	expect(network).toHaveBeenCalledTimes(5);
+	return getOffsets();
+}
+it("chooses the lowest RTT and anchors server time to monotonic midpoint despite wall clock error", async () => {
+	let mono = 0;
+	const rtts = [100, 40, 20, 80, 60];
+	vi.spyOn(performance, "now").mockImplementation(() => mono);
+	vi.spyOn(Date, "now").mockImplementation(() => 14500 + mono);
+	setRtdbOffset(15);
+	await measureHttpOffset(
+		undefined,
+		vi.fn<typeof fetch>().mockImplementation(async () => {
+			mono += rtts.shift()!;
+			return new Response('{"now":100000}');
+		}),
+	);
 	expect(getOffsets()).toMatchObject({
-		offset_http_ms: 40,
-		offset_rtdb_ms: 15,
+		server_anchor_ms: 100000,
+		http_sample_mono_ms: 150,
 		clock_rtt_ms: 20,
+		offset_rtdb_ms: 15,
+		sample_id: 1,
+	});
+	expect(clockProperties(getOffsets(), 14800, 300)).toMatchObject({
+		t_server: 100150,
+		clock_reference: "fly-monotonic",
+		clock_network_bound_ms: 12,
+		clock_uncertainty_ms: 12.15,
+		t_server_lower_ms: 100137.85,
+		t_server_upper_ms: 100162.15,
 	});
 });
-it("silently tolerates invalid/network samples and cancellation", async () => {
-	const network = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
-	await expect(measureHttpOffset(undefined, network)).resolves.toMatchObject({
-		offset_http_ms: null,
+it("does not let RTDB supply merged timestamps", () => {
+	setRtdbOffset(-14500);
+	expect(clockProperties(getOffsets(), 15000, 500)).toMatchObject({
+		t_server: null,
+		clock_reference: "uncalibrated",
+		offset_rtdb_ms: -14500,
 	});
+});
+it("expires calibration, grows the explicit rate allowance, and rejects wall/sleep discontinuities", async () => {
+	const sample = await calibrate();
+	const mono = sample.http_sample_mono_ms!;
+	const wall = sample.wall_anchor_ms!;
+	expect(clockProperties(sample, wall + 30000, mono + 30000)).toMatchObject({
+		t_server: 130000,
+		clock_uncertainty_ms: 42,
+	});
+	for (const [w, m] of [
+		[wall + 60001, mono + CLOCK_MAX_AGE_MS + 1],
+		[wall - 1, mono - 1],
+		[wall + 15000, mono + 100],
+		[wall, mono + 1000],
+	])
+		expect(clockProperties(sample, w, m).t_server).toBeNull();
+	// The wall clock is only a validity check: a small change never shifts the estimate.
+	expect(clockProperties(sample, wall + 200, mono + 100).t_server).toBe(100100);
+});
+it("retains immutable enqueue calibration even after replacement and invalidation", async () => {
+	const sample = await calibrate();
+	invalidateHttpClock();
+	expect(getOffsets().server_anchor_ms).toBeNull();
+	expect(sample.server_anchor_ms).toBe(100000);
+	setRtdbOffset(NaN);
+	expect(getOffsets().offset_rtdb_ms).toBeNull();
+});
+it("rejects invalid responses, network failures, negative/overlong RTT and clock changes during a request", async () => {
+	let mono = 0,
+		wall = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => mono);
+	vi.spyOn(Date, "now").mockImplementation(() => wall);
+	const network = vi
+		.fn<typeof fetch>()
+		.mockRejectedValueOnce(new Error("offline"))
+		.mockResolvedValueOnce(new Response("null"))
+		.mockImplementationOnce(async () => {
+			mono = -1;
+			return new Response('{"now":1}');
+		})
+		.mockImplementationOnce(async () => {
+			mono += 4000;
+			wall += 4000;
+			return new Response('{"now":1}');
+		})
+		.mockImplementationOnce(async () => {
+			mono += 10;
+			wall += 15000;
+			return new Response('{"now":1}');
+		});
+	await measureHttpOffset(undefined, network);
+	expect(getOffsets().sample_id).toBeNull();
+});
+it("does not publish an aborted calibration or start requests after abort", async () => {
 	const controller = new AbortController();
-	controller.abort();
+	const network = vi.fn<typeof fetch>().mockImplementation(async () => {
+		controller.abort();
+		return new Response('{"now":100}');
+	});
+	await measureHttpOffset(controller.signal, network);
+	expect(getOffsets().sample_id).toBeNull();
 	network.mockClear();
 	await measureHttpOffset(controller.signal, network);
 	expect(network).not.toHaveBeenCalled();
-});
-
-it("never substitutes HTTP or wall time for missing RTDB calibration", () => {
-	const httpOnly = {
-		offset_http_ms: -14470,
-		offset_rtdb_ms: null,
-		clock_rtt_ms: 20,
-		http_sample_mono_ms: 10,
-		rtdb_sample_mono_ms: null,
-	};
-	expect(clockProperties(httpOnly, 20000, 100)).toMatchObject({
-		t_server: null,
-		clock_reference: "uncalibrated",
-		fly_rtdb_skew_ms: null,
-	});
-	const calibrated = {
-		...httpOnly,
-		offset_rtdb_ms: 5,
-		rtdb_sample_mono_ms: 90,
-	};
-	expect(clockProperties(calibrated, 20000, 100)).toMatchObject({
-		t_server: 20005,
-		clock_reference: "rtdb",
-		fly_rtdb_skew_ms: -14475,
-		clock_http_age_ms: 90,
-		clock_rtdb_age_ms: 10,
-	});
-	expect(
-		clockProperties({ ...calibrated, offset_http_ms: null }, 20000, 100)
-			.t_server,
-	).toBe(20005);
-	expect(
-		clockProperties({ ...calibrated, offset_rtdb_ms: 0 }, 20000, 100).t_server,
-	).toBe(20000);
-});
-it("returns immutable calibration references and invalidates non-finite samples", () => {
-	setRtdbOffset(10);
-	const old = getOffsets();
-	expect(getOffsets()).toBe(old);
-	setRtdbOffset(20);
-	expect(old.offset_rtdb_ms).toBe(10);
-	expect(getOffsets().offset_rtdb_ms).toBe(20);
-	setRtdbOffset(NaN);
-	expect(getOffsets().offset_rtdb_ms).toBeNull();
 });
