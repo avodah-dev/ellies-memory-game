@@ -14,6 +14,7 @@ export interface EventProps {
 		invalid: number;
 		queued: number;
 		ms_drain: number;
+		drain_ms_max: number;
 		sink_dropped: number;
 		sink_failures: number;
 	};
@@ -49,7 +50,8 @@ export interface TelemetryEvent {
 		seq: number;
 		t_mono: number;
 		t_wall: number;
-		t_server: number;
+		t_server: number | null;
+		clock_reference: "rtdb" | "uncalibrated";
 		environment: RuntimeConfig["environment"];
 		commit: string;
 		$process_person_profile: false;

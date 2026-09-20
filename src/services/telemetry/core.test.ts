@@ -10,6 +10,7 @@ import {
 	track,
 } from "./core";
 import { MemorySink } from "./sinks";
+import { resetClockForTests, setRtdbOffset } from "./clock";
 vi.mock("../logging/LogDB", () => ({
 	logDB: {
 		addLogs: vi.fn().mockResolvedValue(undefined),
@@ -17,6 +18,7 @@ vi.mock("../logging/LogDB", () => ({
 	},
 }));
 beforeEach(() => {
+	resetClockForTests();
 	vi.useFakeTimers();
 	vi.stubGlobal("matchMedia", () => ({ matches: false }));
 	__resetForTests();
@@ -124,4 +126,59 @@ it("rejects unserializable events inside the drain without wedging later writes"
 	expect(() => flushNow()).not.toThrow();
 	expect(telemetryStats().invalid).toBe(1);
 	expect(sink.events.at(-1)?.properties.path).toBe("/after-invalid");
+});
+
+it("captures calibration at enqueue, so a later sample cannot rewrite buffered event times", () => {
+	const sink = new MemorySink();
+	startTelemetry(local, [sink]);
+	track("mm.nav.route", { path: "/uncalibrated" });
+	setRtdbOffset(10);
+	track("mm.nav.route", { path: "/calibrated" });
+	setRtdbOffset(null);
+	flushNow();
+	expect(sink.events[1].properties).toMatchObject({
+		t_server: null,
+		clock_reference: "uncalibrated",
+		offset_rtdb_ms: null,
+	});
+	expect(sink.events[2].properties).toMatchObject({
+		t_server: sink.events[2].properties.t_wall + 10,
+		clock_reference: "rtdb",
+		offset_rtdb_ms: 10,
+	});
+});
+it("reports the maximum drain including sink dispatch for each health interval, then resets it", () => {
+	let mono = 0;
+	let dispatchMs = 7;
+	vi.spyOn(performance, "now").mockImplementation(() => mono);
+	const sink = new MemorySink();
+	const dispatch = {
+		write() {
+			mono += dispatchMs;
+		},
+		flush() {},
+		stop() {},
+		stats() {
+			return { dropped: 0, failures: 0 };
+		},
+	};
+	startTelemetry(local, [dispatch, sink]);
+	flushNow();
+	expect(telemetryStats().drain_ms_max).toBe(7);
+	dispatchMs = 2;
+	track("mm.nav.route", { path: "/fast" });
+	flushNow();
+	expect(telemetryStats()).toMatchObject({ ms_drain: 2, drain_ms_max: 7 });
+	vi.setSystemTime(Date.now() + 30001);
+	flushNow(); // Idle drain must not erase the window's peak.
+	flushNow(); // Deliver the health event enqueued by the preceding drain.
+	const health = sink.events.filter((e) => e.event === "mm.telemetry.health");
+	expect(health[0].properties).toMatchObject({ ms_drain: 0, drain_ms_max: 7 });
+	vi.setSystemTime(Date.now() + 30001);
+	flushNow();
+	flushNow();
+	expect(
+		sink.events.filter((e) => e.event === "mm.telemetry.health")[1].properties
+			.drain_ms_max,
+	).toBe(2);
 });

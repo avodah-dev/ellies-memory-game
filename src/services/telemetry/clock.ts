@@ -1,14 +1,58 @@
-let httpOffset: number | null = null;
-let rtdbOffset: number | null = null;
-let httpRtt: number | null = null;
-export function setRtdbOffset(value: number) {
-	if (Number.isFinite(value)) rtdbOffset = value;
+export interface ClockOffsets {
+	readonly offset_http_ms: number | null;
+	readonly offset_rtdb_ms: number | null;
+	readonly clock_rtt_ms: number | null;
+	readonly http_sample_mono_ms: number | null;
+	readonly rtdb_sample_mono_ms: number | null;
 }
-export function getOffsets() {
+const empty: ClockOffsets = Object.freeze({
+	offset_http_ms: null,
+	offset_rtdb_ms: null,
+	clock_rtt_ms: null,
+	http_sample_mono_ms: null,
+	rtdb_sample_mono_ms: null,
+});
+let offsets = empty;
+export function setRtdbOffset(value: number | null) {
+	const valid = typeof value === "number" && Number.isFinite(value);
+	offsets = Object.freeze({
+		...offsets,
+		offset_rtdb_ms: valid ? value : null,
+		rtdb_sample_mono_ms: valid ? performance.now() : null,
+	});
+}
+// One immutable reference per calibration; enqueue does not allocate clock metadata.
+export function getOffsets(): ClockOffsets {
+	return offsets;
+}
+export function clockProperties(
+	clock: ClockOffsets,
+	wall: number,
+	mono: number,
+) {
 	return {
-		offset_http_ms: httpOffset,
-		offset_rtdb_ms: rtdbOffset,
-		clock_rtt_ms: httpRtt,
+		offset_http_ms: clock.offset_http_ms,
+		offset_rtdb_ms: clock.offset_rtdb_ms,
+		clock_rtt_ms: clock.clock_rtt_ms,
+		clock_reference:
+			clock.offset_rtdb_ms === null
+				? ("uncalibrated" as const)
+				: ("rtdb" as const),
+		t_server:
+			clock.offset_rtdb_ms === null ? null : wall + clock.offset_rtdb_ms,
+		clock_http_age_ms:
+			clock.http_sample_mono_ms === null
+				? null
+				: mono - clock.http_sample_mono_ms,
+		clock_rtdb_age_ms:
+			clock.rtdb_sample_mono_ms === null
+				? null
+				: mono - clock.rtdb_sample_mono_ms,
+		// Estimate of Fly minus RTDB time, not proof of which clock is wrong.
+		fly_rtdb_skew_ms:
+			clock.offset_http_ms === null || clock.offset_rtdb_ms === null
+				? null
+				: clock.offset_http_ms - clock.offset_rtdb_ms,
 	};
 }
 export async function measureHttpOffset(
@@ -29,7 +73,8 @@ export async function measureHttpOffset(
 			});
 			if (!response.ok) continue;
 			const body = await response.json();
-			const rtt = performance.now() - start;
+			const ended = performance.now();
+			const rtt = ended - start;
 			if (
 				typeof body.now === "number" &&
 				Number.isFinite(body.now) &&
@@ -37,8 +82,12 @@ export async function measureHttpOffset(
 				!signal?.aborted
 			) {
 				best = rtt;
-				httpOffset = body.now - (wall + rtt / 2);
-				httpRtt = rtt;
+				offsets = Object.freeze({
+					...offsets,
+					offset_http_ms: body.now - (wall + rtt / 2),
+					clock_rtt_ms: rtt,
+					http_sample_mono_ms: ended,
+				});
 			}
 		} catch {
 			/* Measurement failure must not affect the app. */
@@ -47,7 +96,5 @@ export async function measureHttpOffset(
 	return getOffsets();
 }
 export function resetClockForTests() {
-	httpOffset = null;
-	rtdbOffset = null;
-	httpRtt = null;
+	offsets = empty;
 }

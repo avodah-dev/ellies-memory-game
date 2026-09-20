@@ -1,6 +1,6 @@
 import type { RuntimeConfig } from "../../../shared/runtimeConfig";
 import { prepareEvent } from "./events";
-import { getOffsets } from "./clock";
+import { clockProperties, getOffsets, type ClockOffsets } from "./clock";
 import type {
 	EventName,
 	EventProps,
@@ -22,6 +22,7 @@ type Entry = {
 	mono: number;
 	wall: number;
 	context: TelemetryContext;
+	clock: ClockOffsets;
 	input: string | null;
 };
 const emptyContext: TelemetryContext = {
@@ -46,6 +47,7 @@ let config: RuntimeConfig | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let healthAt = 0;
 let lastDrainMs = 0;
+let maxDrainMs = 0;
 export const counters = {
 	cardRenders: 0,
 	boardRenders: 0,
@@ -87,6 +89,7 @@ export function track<N extends EventName>(
 			mono: performance.now(),
 			wall: Date.now(),
 			context,
+			clock: getOffsets(),
 			input,
 		};
 		length++;
@@ -95,7 +98,13 @@ export function track<N extends EventName>(
 	}
 }
 export function telemetryStats() {
-	return { dropped, invalid, queued: length, ms_drain: lastDrainMs };
+	return {
+		dropped,
+		invalid,
+		queued: length,
+		ms_drain: lastDrainMs,
+		drain_ms_max: maxDrainMs,
+	};
 }
 function arm(ms: number) {
 	if (timer !== undefined || !config) return;
@@ -112,7 +121,6 @@ export function flushNow() {
 	const batch: PreparedEvent[] = [];
 	const device = getDeviceIdentity();
 	const pageSession = getPageSessionId();
-	const offsets = getOffsets();
 	while (
 		length &&
 		batch.length < 50 &&
@@ -132,16 +140,13 @@ export function flushNow() {
 					properties: {
 						...entry.props,
 						...entry.context,
-						...offsets,
+						...clockProperties(entry.clock, entry.wall, entry.mono),
 						device_id: device.id,
 						device_label: device.label,
 						page_session_id: pageSession,
 						seq: entry.seq,
 						t_mono: entry.mono,
 						t_wall: entry.wall,
-						t_server:
-							entry.wall +
-							(offsets.offset_http_ms ?? offsets.offset_rtdb_ms ?? 0),
 						input_id: entry.input,
 						environment: config.environment,
 						commit: __BUILD_INFO__.commitHash,
@@ -163,6 +168,7 @@ export function flushNow() {
 		}
 	}
 	lastDrainMs = performance.now() - started;
+	maxDrainMs = Math.max(maxDrainMs, lastDrainMs);
 	if (Date.now() - healthAt >= 30000) {
 		healthAt = Date.now();
 		let sinkDropped = 0;
@@ -181,6 +187,7 @@ export function flushNow() {
 			sink_dropped: sinkDropped,
 			sink_failures: failures,
 		});
+		maxDrainMs = 0;
 	}
 	arm(length ? 0 : 2000);
 }
@@ -238,6 +245,7 @@ export function __resetForTests() {
 	context = emptyContext;
 	healthAt = 0;
 	lastDrainMs = 0;
+	maxDrainMs = 0;
 	for (const key of Object.keys(counters) as (keyof typeof counters)[])
 		counters[key] = 0;
 }

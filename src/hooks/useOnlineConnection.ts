@@ -2,16 +2,25 @@ import { useEffect, useState } from "react";
 import { onValue, ref } from "firebase/database";
 import { rtdb } from "../lib/firebase";
 import { useOnlineStore } from "../stores/onlineStore";
+import { observeRtdbClock } from "../services/telemetry/rtdbClock";
 export function useOnlineConnection(roomCode: string) {
 	const [connected, setConnected] = useState(false);
 	const [browserOnline, setBrowserOnline] = useState(() => navigator.onLine);
 	const opponentConnected = useOnlineStore((s) => s.opponentConnected);
 	useEffect(() => {
 		if (!roomCode) return;
+		const clock = observeRtdbClock(rtdb);
 		const stop = onValue(
 			ref(rtdb, ".info/connected"),
-			(snap) => setConnected(snap.val() === true),
-			() => setConnected(false),
+			(snap) => {
+				const value = snap.val() === true;
+				setConnected(value);
+				clock.connectionChanged(value);
+			},
+			() => {
+				setConnected(false);
+				clock.connectionChanged(false);
+			},
 		);
 		// A brief browser outage need not close Firebase's existing socket.
 		// Track these signals independently so an online event can resume the
@@ -21,6 +30,7 @@ export function useOnlineConnection(roomCode: string) {
 		window.addEventListener("offline", offline);
 		window.addEventListener("online", online);
 		return () => {
+			clock.stop();
 			stop();
 			window.removeEventListener("offline", offline);
 			window.removeEventListener("online", online);
