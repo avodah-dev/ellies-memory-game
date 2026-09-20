@@ -226,9 +226,23 @@ it("keeps the capture-time Fly anchor when a queued event drains after invalidat
 	track("mm.nav.route", { path: "/fly-calibrated" });
 	invalidateHttpClock();
 	flushNow();
+	expect(sink.events.at(-1)?.timestamp).toBe("1970-01-01T00:01:40.000Z");
 	expect(sink.events.at(-1)?.properties).toMatchObject({
 		t_server: 100000,
 		clock_reference: "fly-monotonic",
 		clock_sample_id: 1,
 	});
+});
+
+it("omits uncalibrated PostHog timestamps instead of indexing by a badly dated device", () => {
+	vi.spyOn(Date, "now").mockReturnValue(1);
+	const sink = new MemorySink();
+	startTelemetry(local, [sink]);
+	track("mm.nav.route", { path: "/bad-wall" });
+	flushNow();
+	const event = sink.events.at(-1)!;
+	expect(event.properties.t_wall).toBe(1);
+	expect(event.properties.t_server).toBeNull();
+	expect(event.timestamp).toBeUndefined();
+	expect(JSON.parse(JSON.stringify(event))).not.toHaveProperty("timestamp");
 });

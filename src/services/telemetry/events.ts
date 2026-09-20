@@ -51,7 +51,7 @@ export interface TelemetryEvent {
 	event: EventName;
 	distinct_id: string;
 	uuid: string;
-	timestamp: string;
+	timestamp?: string;
 	properties: Record<string, unknown> & {
 		device_id: string;
 		device_label: string;
