@@ -59,7 +59,7 @@ describe("diagnostic sinks", () => {
 						release = resolve;
 					}),
 			)
-			.mockResolvedValue(new Response('{"status":"Ok"}'));
+			.mockImplementation(async () => new Response('{"status":"Ok"}'));
 		const s = sink(network);
 		s.write(Array.from({ length: 120 }, (_, i) => event(i, "🦋".repeat(300))));
 		s.flush();
@@ -95,7 +95,7 @@ describe("diagnostic sinks", () => {
 		const network = vi
 			.fn<typeof fetch>()
 			.mockRejectedValueOnce(new Error("offline"))
-			.mockResolvedValue(new Response("ok"));
+			.mockImplementation(async () => new Response("ok"));
 		const s = sink(network);
 		s.write(Array.from({ length: 2010 }, (_, i) => event(i)));
 		expect(network).not.toHaveBeenCalled();
@@ -168,5 +168,27 @@ it("calls fetch with the browser global receiver rather than the sink instance",
 	s.write([event()]);
 	await vi.advanceTimersByTimeAsync(0);
 	expect(receiverSensitiveFetch).toHaveBeenCalledTimes(1);
+	expect(s.stats()).toEqual({ dropped: 0, failures: 0 });
+});
+it("waits for the response body before sending the next keepalive batch", async () => {
+	let finishBody!: () => void;
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode("ok"));
+			finishBody = () => controller.close();
+		},
+	});
+	const send = vi
+		.fn<typeof fetch>()
+		.mockResolvedValueOnce(new Response(body))
+		.mockImplementation(async () => new Response("ok"));
+	const s = sink(send);
+	s.write(Array.from({ length: 60 }, (_, i) => event(i)));
+	await vi.advanceTimersByTimeAsync(100);
+	expect(send).toHaveBeenCalledTimes(1);
+	expect(s.stats()).toEqual({ dropped: 0, failures: 0 });
+	finishBody();
+	await vi.advanceTimersByTimeAsync(100);
+	expect(send).toHaveBeenCalledTimes(2);
 	expect(s.stats()).toEqual({ dropped: 0, failures: 0 });
 });
