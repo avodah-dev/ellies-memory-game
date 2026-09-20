@@ -99,7 +99,9 @@ export class PostHogBatchSink implements TelemetrySink {
 	private readonly onOnline = () => this.flush();
 	private readonly fetchImpl: typeof fetch;
 	constructor(fetchImpl: typeof fetch = fetch) {
-		this.fetchImpl = fetchImpl;
+		// Browser fetch requires a Window/Worker receiver; a class-method call
+		// otherwise fails with Illegal invocation before any request is sent.
+		this.fetchImpl = fetchImpl.bind(globalThis);
 		window.addEventListener("online", this.onOnline);
 	}
 	write(events: PreparedEvent[]) {
