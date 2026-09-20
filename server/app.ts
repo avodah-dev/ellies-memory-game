@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { emulatorCsp } from "../shared/emulatorCsp";
 import { RELOAD_QUERY } from "../shared/reload";
+import { registerIngestProxy, type IngestFetch } from "./ingestProxy";
 import {
 	parseRuntimeConfig,
 	type RuntimeConfig,
@@ -12,6 +13,7 @@ import {
 export function configFromEnvironment(env: NodeJS.ProcessEnv): RuntimeConfig {
 	return parseRuntimeConfig({
 		environment: env.APP_ENV,
+		telemetry: env.APP_TELEMETRY,
 		firebase:
 			env.APP_ENV === "emulator"
 				? null
@@ -23,6 +25,7 @@ export async function createServer(options: {
 	config: RuntimeConfig;
 	commit: string;
 	logger?: boolean;
+	ingestFetch?: IngestFetch;
 }) {
 	const app = Fastify({ logger: options.logger ?? false });
 	// Refuse to serve a deployment with no built entry point.
@@ -51,6 +54,14 @@ export async function createServer(options: {
 	app.get("/app-config.json", (_request, reply) =>
 		reply.header("Cache-Control", "no-store").send(options.config),
 	);
+	app.get("/diag/ping", (_request, reply) =>
+		reply.header("Cache-Control", "no-store").send({ now: Date.now() }),
+	);
+	if (
+		options.config.environment !== "emulator" &&
+		options.config.telemetry === "on"
+	)
+		await registerIngestProxy(app, options.ingestFetch);
 	await app.register(fastifyStatic, {
 		root: options.root,
 		setHeaders(response, file) {

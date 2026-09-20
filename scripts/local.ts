@@ -143,6 +143,7 @@ try {
 			void stop().then(() => process.exit(1));
 		}, 600000);
 		await wait(launch("bun", ["run", "check"]));
+		await wait(launch("bun", ["run", "test:ingest-runtime"]));
 	}
 	const emulator = launch("node", [
 		"node_modules/firebase-tools/lib/bin/firebase.js",
