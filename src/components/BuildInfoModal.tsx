@@ -1,4 +1,6 @@
 const buildInfo = __BUILD_INFO__;
+import { DeviceIdentity } from "./DeviceIdentity";
+import { getRuntimeConfig } from "../lib/runtimeConfig";
 import { Modal } from "./Modal";
 
 interface BuildInfoModalProps {
@@ -26,6 +28,10 @@ export const BuildInfoModal = ({ isOpen, onClose }: BuildInfoModalProps) => {
 	return (
 		<Modal isOpen={isOpen} onClose={onClose} title="Build Information">
 			<div className="space-y-6">
+				<DeviceIdentity />
+				<p className="text-sm text-gray-600">
+					Environment: {getRuntimeConfig().environment}
+				</p>
 				<div className="bg-gray-50 rounded-lg p-4 space-y-4">
 					{/* Build Time */}
 					<div>
