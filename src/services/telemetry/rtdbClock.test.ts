@@ -36,6 +36,9 @@ it("requires a numeric sample and a live connection; invalidates on disconnect a
 	expect(getOffsets().offset_rtdb_ms).toBe(-15);
 	clock.connectionChanged(false);
 	expect(getOffsets().offset_rtdb_ms).toBeNull();
+	clock.connectionChanged(true);
+	expect(getOffsets().offset_rtdb_ms).toBeNull();
+	clock.connectionChanged(false);
 	listener.value({ val: () => -20 });
 	expect(getOffsets().offset_rtdb_ms).toBeNull();
 	clock.connectionChanged(true);
@@ -46,6 +49,20 @@ it("requires a numeric sample and a live connection; invalidates on disconnect a
 	clock.connectionChanged(true);
 	expect(getOffsets().offset_rtdb_ms).toBeNull();
 	expect(listener.stop).toHaveBeenCalledTimes(1);
+});
+it("retains the offset observation time when the connection becomes ready later", () => {
+	let now = 10;
+	const spy = vi.spyOn(performance, "now").mockImplementation(() => now);
+	const clock = observeRtdbClock({} as Database);
+	listener.value({ val: () => 5 });
+	now = 100;
+	clock.connectionChanged(true);
+	expect(getOffsets().rtdb_sample_mono_ms).toBe(10);
+	now = 200;
+	clock.connectionChanged(true);
+	expect(getOffsets().rtdb_sample_mono_ms).toBe(10);
+	clock.stop();
+	spy.mockRestore();
 });
 it("accepts a genuine zero sample and invalidates on missing/invalid values or listener errors", () => {
 	const clock = observeRtdbClock({} as Database);

@@ -1,6 +1,7 @@
 import { track } from "../services/telemetry/core";
 import {
 	stateFields,
+	epochBump,
 	rememberState,
 	stateApplied,
 	classifyFlipRejection,
@@ -248,6 +249,7 @@ export function useGameController(
 		lastSyncedVersionRef,
 		localVersionRef,
 		lastGameRoundRef,
+		telemetryTrace,
 	} = useGameSynchronization({
 		isOnlineMode,
 		syncAdapter,
@@ -563,18 +565,16 @@ export function useGameController(
 		}
 		isCheckingMatchRef.current = false;
 		++generation.current;
-		track("mm.sync.epoch", {
-			epoch: generation.current,
-			reason: "controller-reset-or-full-state",
-		});
+		epochBump(telemetryTrace, generation.current, "controller-reset");
 		if (animationTimer.current) clearTimeout(animationTimer.current);
 		setIsAnimating(false);
 		setIsAnimatingCards(false);
-	}, [generation]);
+	}, [generation, telemetryTrace]);
 
 	const setFullGameState = useCallback(
 		(newState: GameState) => {
 			++generation.current;
+			epochBump(telemetryTrace, generation.current, "controller-full-state");
 			setGameState(newState);
 
 			if (isOnlineMode) {
@@ -593,6 +593,7 @@ export function useGameController(
 			lastSyncedVersionRef,
 			localVersionRef,
 			lastGameRoundRef,
+			telemetryTrace,
 		],
 	);
 

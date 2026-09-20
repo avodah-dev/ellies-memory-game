@@ -180,6 +180,41 @@ export const noopSyncObserver: SyncObserver = {
 	listener() {},
 	call() {},
 };
+// An observer is record-only even when a custom implementation fails. A failed
+// start explicitly disables that trace; it never substitutes another observer.
+export function isolateSyncObserver(observer: SyncObserver) {
+	const observe = (action: () => void) => {
+		try {
+			action();
+		} catch {
+			/* silent */
+		}
+	};
+	return {
+		txStart(state: GameState, room: string): TransactionTrace | null {
+			try {
+				return observer.txStart(state, room);
+			} catch {
+				return null;
+			}
+		},
+		txPhase(
+			tx: TransactionTrace | null,
+			phase: Parameters<SyncObserver["txPhase"]>[1],
+		) {
+			if (tx !== null) observe(() => observer.txPhase(tx, phase));
+		},
+		txEnd(tx: TransactionTrace | null, error?: unknown) {
+			if (tx !== null) observe(() => observer.txEnd(tx, error));
+		},
+		snapshotRaw(room: string, snapshot: RawSnapshot) {
+			observe(() => observer.snapshotRaw(room, snapshot));
+		},
+		listener(room: string, phase: string, id: string, error?: unknown) {
+			observe(() => observer.listener(room, phase, id, error));
+		},
+	};
+}
 // Promise identity and receiver are preserved. Telemetry never changes a rejection.
 export function instrumentAdapter<T extends object>(
 	adapter: T,

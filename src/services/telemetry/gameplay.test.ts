@@ -13,6 +13,7 @@ import {
 	timerCancel,
 	timerFire,
 	stateFields,
+	rememberState,
 } from "./gameplay";
 vi.mock("./core", () => ({
 	track: vi.fn(),
@@ -33,6 +34,19 @@ const state = () =>
 		gameRound: 3,
 		syncVersion: 7,
 	});
+it("reports the queued revision of optimistic cards without changing the game state", () => {
+	const s = state();
+	const queued = { ...s, syncVersion: 8 };
+	rememberState(queued);
+	expect(stateFields(s)).toMatchObject({ game_round: 3, sync_version: 8 });
+	expect(s.syncVersion).toBe(7);
+	// A new round owns its explicit revision even if it reuses card objects.
+	const replay = { ...s, gameRound: 4, syncVersion: 1 };
+	expect(stateFields(replay)).toMatchObject({
+		game_round: 4,
+		sync_version: 1,
+	});
+});
 it("classifies each engine rejection without changing state", () => {
 	const s = state(),
 		id = s.cards[0].id;

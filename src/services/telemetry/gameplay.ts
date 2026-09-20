@@ -17,9 +17,15 @@ const revisions = new WeakMap<Card[], StateFields>();
 export function stateFields(state: GameState): StateFields {
 	const online = state as Partial<OnlineGameState>;
 	const remembered = revisions.get(state.cards);
+	const round = online.gameRound ?? remembered?.game_round ?? null;
+	let version = online.syncVersion ?? remembered?.sync_version ?? null;
+	// Optimistic engine states retain the incoming revision while their queued
+	// write gets a newer one. The same card array identifies that local state.
+	if (remembered?.game_round === round && remembered?.sync_version != null)
+		version = Math.max(version ?? 0, remembered.sync_version);
 	return {
-		game_round: online.gameRound ?? remembered?.game_round ?? null,
-		sync_version: online.syncVersion ?? remembered?.sync_version ?? null,
+		game_round: round,
+		sync_version: version,
 		game_status: state.gameStatus,
 		current_player: state.currentPlayer,
 	};

@@ -15,6 +15,10 @@ import {
 } from "../../src/lib/firebaseClient";
 import { FirestoreSyncAdapter } from "../../src/services/sync/FirestoreSyncAdapter";
 import {
+	noopSyncObserver,
+	type SyncObserver,
+} from "../../src/services/telemetry/syncObserver";
+import {
 	createInitialState,
 	initializeCards,
 	startGameWithCards,
@@ -30,10 +34,10 @@ import ports from "../../local-ports.json";
 
 const clients: FirebaseServices[] = [];
 const adapters: FirestoreSyncAdapter[] = [];
-async function client() {
+async function client(observer?: SyncObserver) {
 	const c = createFirebaseServices("emulator", crypto.randomUUID());
 	clients.push(c);
-	const a = new FirestoreSyncAdapter(c);
+	const a = new FirestoreSyncAdapter(c, observer);
 	adapters.push(a);
 	await a.connect();
 	return { c, a, uid: a.getOdahId()! };
@@ -58,9 +62,9 @@ const initial = (pairCount = 4) =>
 			() => 0.5,
 		),
 	);
-async function room() {
-	const host = await client(),
-		guest = await client();
+async function room(observer?: SyncObserver) {
+	const host = await client(observer),
+		guest = await client(observer);
 	const code = await host.a.createRoom(options);
 	await guest.a.joinRoom(code, {
 		odahId: guest.uid,
@@ -134,6 +138,40 @@ describe("real Firebase adapters and checked-in rules", () => {
 				gameStatus: "playing",
 			});
 			expect(started).toEqual(await guest.a.getState());
+		} finally {
+			stop();
+		}
+	});
+	it("keeps real writes, original errors and snapshot delivery intact when observers throw", async () => {
+		const fail = () => {
+			throw new Error("diagnostic observer failure");
+		};
+		const { host, guest, code } = await room({
+			...noopSyncObserver,
+			txPhase: fail,
+			txEnd: fail,
+			snapshotRaw: fail,
+			listener: fail,
+		});
+		await host.a.startGame(code, initial());
+		const received: OnlineGameState[] = [];
+		const errors: Error[] = [];
+		const stop = guest.a.subscribeToState(
+			(s) => received.push(s as OnlineGameState),
+			(e) => errors.push(e),
+		);
+		try {
+			const current = (await host.a.getState()) as OnlineGameState;
+			const next = {
+				...flipCard(current, current.cards[0].id),
+				gameRound: 1,
+				syncVersion: 2,
+				lastUpdatedBy: 1,
+			};
+			await host.a.setState(next);
+			await eventually(async () => received.some((s) => s.syncVersion === 2));
+			await expect(host.a.setState(next)).rejects.toThrow("Game changed");
+			expect(errors).toEqual([]);
 		} finally {
 			stop();
 		}
