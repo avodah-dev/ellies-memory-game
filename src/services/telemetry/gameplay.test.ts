@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createCardSet, createTestOnlineGameState } from "../../test/testUtils";
-import { beginInput, track } from "./core";
+import { beginInput, getContext, track } from "./core";
 import {
 	classifyFlipRejection,
 	trackCardClick,
@@ -18,8 +18,14 @@ vi.mock("./core", () => ({
 	track: vi.fn(),
 	beginInput: vi.fn(() => "input-1"),
 	currentInputId: () => "input-1",
+	getContext: vi.fn(() => ({ room_code: "AAAA" })),
 }));
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+	vi.clearAllMocks();
+	vi.mocked(getContext).mockReturnValue({ room_code: "AAAA" } as ReturnType<
+		typeof getContext
+	>);
+});
 const state = () =>
 	createTestOnlineGameState({
 		cards: createCardSet(2),
@@ -140,4 +146,22 @@ it("keeps timer cancellation distinct from post-fire cleanup", () => {
 		game_round: 3,
 		sync_version: 7,
 	});
+});
+it("keeps the original room on delayed queue and timer records after leaving", () => {
+	const s = state();
+	const queue = createSyncTrace();
+	const write = writeEnqueued(queue, s, "flip:card-0", 1);
+	const timer = timerStart("results", s, 1200);
+	vi.mocked(getContext).mockReturnValue({ room_code: "BBBB" } as ReturnType<
+		typeof getContext
+	>);
+	writeDropped(queue, write, 2, false);
+	timerCancel(timer, "room-change");
+	for (const event of ["mm.sync.write.dropped", "mm.nav.results_timer"]) {
+		const row = vi
+			.mocked(track)
+			.mock.calls.filter(([name]) => name === event)
+			.at(-1);
+		expect(row?.[1]).toMatchObject({ room_code: "AAAA" });
+	}
 });

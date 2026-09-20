@@ -1,6 +1,6 @@
 import type { Card, GameState, OnlineGameState } from "../../types";
 import type { Detail, StateFields } from "./gameplayEvents";
-import { beginInput, currentInputId, track } from "./core";
+import { beginInput, currentInputId, getContext, track } from "./core";
 let serial = 0;
 export const nextId = () => String(++serial);
 export function errorCode(error: unknown): string {
@@ -189,7 +189,7 @@ export function writeTrace(state: GameState): WriteTrace {
 			at: performance.now(),
 			input: currentInputId(),
 			inputAt: inputTime(),
-			fields: stateFields(state),
+			fields: { ...getContext(), ...stateFields(state) },
 		}
 	);
 }
@@ -224,6 +224,7 @@ export function writeEnqueued(
 		input: currentInputId(),
 		inputAt: inputTime(),
 		fields: {
+			...getContext(),
 			...stateFields(state),
 			context: context ?? null,
 			epoch,
@@ -306,7 +307,7 @@ export function stateApplied(state: GameState, source: string) {
 	const record = {
 		id: nextId(),
 		at: performance.now(),
-		fields: stateFields(state),
+		fields: { ...getContext(), ...stateFields(state) },
 	};
 	applied.set(state.cards, record);
 	track("mm.state.applied", { ...record.fields, apply_id: record.id, source });
@@ -355,7 +356,7 @@ export function timerStart(
 		at: performance.now(),
 		delay,
 		kind,
-		fields: stateFields(state),
+		fields: { ...getContext(), ...stateFields(state) },
 		fired: false,
 		cancelled: false,
 	};

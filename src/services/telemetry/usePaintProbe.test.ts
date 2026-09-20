@@ -4,6 +4,7 @@ import { usePaintProbe } from "./usePaintProbe";
 import { createCardSet } from "../../test/testUtils";
 import { track } from "./core";
 vi.mock("./core", () => ({
+	getContext: () => ({}),
 	track: vi.fn(),
 	counters: { cardRenders: 1, boardRenders: 1, modelPublishes: 1 },
 	currentInputId: () => null,

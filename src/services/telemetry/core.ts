@@ -60,6 +60,9 @@ export const counters = {
 export function setContext(next: Partial<TelemetryContext>) {
 	context = { ...context, ...next };
 }
+export function getContext(): Readonly<TelemetryContext> {
+	return context;
+}
 export function beginInput(): string {
 	const id = String(++inputSeq);
 	input = id;

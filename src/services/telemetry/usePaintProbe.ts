@@ -1,7 +1,7 @@
 import { useLayoutEffect } from "react";
 import type { Card } from "../../types";
 import { appliedCards, cardFields } from "./gameplay";
-import { counters, track } from "./core";
+import { counters, getContext, track } from "./core";
 export function usePaintProbe(cards: Card[]) {
 	useLayoutEffect(() => {
 		const applied = appliedCards(cards),
@@ -9,7 +9,7 @@ export function usePaintProbe(cards: Card[]) {
 		const scheduled = performance.now();
 		let done = false;
 		let channel: MessageChannel | null = null;
-		const props = { ...fields, apply_id: applied?.id ?? null };
+		const props = { ...getContext(), ...fields, apply_id: applied?.id ?? null };
 		const frame = requestAnimationFrame(() => {
 			channel = new MessageChannel();
 			channel.port1.onmessage = () => {

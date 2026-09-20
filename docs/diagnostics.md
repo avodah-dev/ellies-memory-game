@@ -195,3 +195,50 @@ ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
 ```
 
 For render/cursor pressure, compare window deltas in `mm.perf.frames` against long frames and timer drift, with room/device/build fixed. Counts alone do not establish that a render caused a dropped tap. Existing autocapture predates the refactor and is unchanged here; compare PostHog SDK click timestamps with the independent input/game events without assuming it is a new regression.
+
+Remote delivery and paint samples (one row per writer/receiver/round/revision):
+
+```sql
+SELECT w.device AS writer, r.device AS receiver, w.round, w.version,
+       r.accepted_at - w.committed_at AS estimated_commit_to_accept_ms,
+       p.painted_mono - r.accepted_mono AS accept_to_paint_ms,
+       p.apply_to_paint_ms
+FROM (
+    SELECT properties.device_id AS device, properties.game_round AS round,
+           properties.sync_version AS version,
+           min(toFloat(properties.t_server)) AS committed_at
+    FROM events
+    WHERE event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
+      AND properties.ok = true AND properties.clock_reference = 'rtdb'
+      AND properties.t_server IS NOT NULL
+    GROUP BY device, round, version
+) AS w
+JOIN (
+    SELECT properties.device_id AS device, properties.page_session_id AS session,
+           properties.game_round AS round, properties.sync_version AS version,
+           min(toFloat(properties.t_server)) AS accepted_at,
+           min(toFloat(properties.t_mono)) AS accepted_mono
+    FROM events
+    WHERE event = 'mm.sync.snapshot.gate' AND properties.room_code = 'ROOM'
+      AND properties.decision = 'accepted' AND properties.clock_reference = 'rtdb'
+      AND properties.t_server IS NOT NULL
+    GROUP BY device, session, round, version
+) AS r ON w.round = r.round AND w.version = r.version
+JOIN (
+    SELECT properties.device_id AS device, properties.page_session_id AS session,
+           properties.game_round AS round, properties.sync_version AS version,
+           min(toFloat(properties.t_mono)) AS painted_mono,
+           argMin(toFloat(properties.ms_apply_to_paint), toFloat(properties.t_mono)) AS apply_to_paint_ms
+    FROM events
+    WHERE event = 'mm.render.painted' AND properties.room_code = 'ROOM'
+      AND properties.phase = 'after-frame-task'
+      AND properties.ms_apply_to_paint IS NOT NULL
+    GROUP BY device, session, round, version
+) AS p ON r.device = p.device AND r.session = p.session
+          AND r.round = p.round AND r.version = p.version
+WHERE w.device != r.device AND p.painted_mono >= r.accepted_mono
+```
+
+This query uses the earliest accepted/painted occurrence of a revision per receiving page session. For repeated resynchronizations, use the detailed `apply_id` records instead. `committed_at` is the writer's transaction-promise completion observation; a peer may receive the commit before that promise resolves. Negative commit-to-accept estimates therefore need not be clock error. These samples do not measure Firestore server processing time, and sample absence can mean filtering or a cancelled paint rather than missing delivery. Use the raw snapshot and cancellation events to audit excluded revisions.
+
+Delayed writes, timers and paint tasks retain the room/role context captured when scheduled, so completing or cancelling after a room change cannot assign them to the new room.

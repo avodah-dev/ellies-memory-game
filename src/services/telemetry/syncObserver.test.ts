@@ -6,7 +6,11 @@ import {
 } from "./syncObserver";
 import { track } from "./core";
 import { createTestOnlineGameState } from "../../test/testUtils";
-vi.mock("./core", () => ({ track: vi.fn(), currentInputId: () => null }));
+vi.mock("./core", () => ({
+	track: vi.fn(),
+	currentInputId: () => null,
+	getContext: () => ({}),
+}));
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.clearAllMocks();
