@@ -296,6 +296,35 @@ describe("PostHog proxy", () => {
 		expect(response.body).toBe("limited");
 		expect(response.headers["retry-after"]).toBe("30");
 	});
+	it("bounds decoded response bytes even with a misleading length and cancels the stream", async () => {
+		const cancel = vi.fn();
+		const upstream = vi.fn<IngestFetch>().mockResolvedValue(
+			new Response(
+				new ReadableStream({
+					pull(controller) {
+						controller.enqueue(new Uint8Array(3 * 1024 * 1024));
+					},
+					cancel,
+				}),
+				{ headers: { "content-length": "1", "content-encoding": "gzip" } },
+			),
+		);
+		const server = await serverWith(upstream);
+		const response = await server.inject("/ingest/static/large.js");
+		expect(response.statusCode).toBe(502);
+		expect(response.body).toBe("");
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(upstream.mock.calls[0][1].signal!.aborted).toBe(true);
+	});
+	it("passes an empty successful response", async () => {
+		const upstream = vi
+			.fn<IngestFetch>()
+			.mockResolvedValue(new Response(null, { status: 204 }));
+		const server = await serverWith(upstream);
+		const response = await server.inject("/ingest/batch/");
+		expect(response.statusCode).toBe(204);
+		expect(response.body).toBe("");
+	});
 	it.each(["headers", "body"])(
 		"aborts a stalled upstream %s phase after ten seconds",
 		async (phase) => {

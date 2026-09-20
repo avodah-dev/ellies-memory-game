@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 export type IngestFetch = (url: URL, options: RequestInit) => Promise<Response>;
 const INGEST_ORIGIN = "https://us.i.posthog.com";
 const ASSETS_ORIGIN = "https://us-assets.i.posthog.com";
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const STRIPPED_HEADERS = new Set([
 	"set-cookie",
 	"content-encoding",
@@ -17,6 +18,28 @@ const STRIPPED_HEADERS = new Set([
 	"trailer",
 	"upgrade",
 ]);
+
+async function readBoundedBody(response: Response): Promise<Buffer> {
+	if (!response.body) return Buffer.alloc(0);
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let bytes = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) return Buffer.concat(chunks, bytes);
+			bytes += value.byteLength;
+			if (bytes > MAX_RESPONSE_BYTES) {
+				// Count decoded bytes, never trust compressed/missing Content-Length.
+				void reader.cancel().catch(() => {});
+				throw new Error("Upstream response limit exceeded");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
 
 function targetFor(rawUrl: string): URL {
 	const incoming = new URL(rawUrl, "http://matchimus.invalid");
@@ -88,7 +111,7 @@ export function registerIngestProxy(
 							upstream.status !== 304)
 					)
 						throw new Error("Upstream redirect rejected");
-					const body = Buffer.from(await upstream.arrayBuffer());
+					const body = await readBoundedBody(upstream);
 					const connectionHeaders = new Set(
 						(upstream.headers.get("connection") ?? "")
 							.toLowerCase()
@@ -101,6 +124,7 @@ export function registerIngestProxy(
 					});
 					return reply.code(upstream.status).send(body);
 				} catch {
+					controller.abort();
 					// Do not log bodies, tokens, request URLs, or upstream error text.
 					request.log.warn("PostHog upstream request failed");
 					return reply.code(502).send();
