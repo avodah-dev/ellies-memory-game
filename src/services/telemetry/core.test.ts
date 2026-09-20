@@ -103,3 +103,15 @@ describe("telemetry core", () => {
 		expect(vi.getTimerCount()).toBe(1);
 	});
 });
+
+it("rejects unserializable events inside the drain without wedging later writes", () => {
+	const sink = new MemorySink();
+	startTelemetry(local, [sink]);
+	const props: { path: string; circular?: unknown } = { path: "/" };
+	props.circular = props;
+	track("mm.nav.route", props);
+	track("mm.nav.route", { path: "/after-invalid" });
+	expect(() => flushNow()).not.toThrow();
+	expect(telemetryStats().invalid).toBe(1);
+	expect(sink.events.at(-1)?.properties.path).toBe("/after-invalid");
+});

@@ -1,20 +1,20 @@
 import type { RuntimeConfig } from "../../../shared/runtimeConfig";
 import { logDB, type LogEntry } from "../logging/LogDB";
-import type { TelemetryEvent } from "./events";
+import type { PreparedEvent, TelemetryEvent } from "./events";
 
 // Public ingestion token already used by the browser SDK; not a personal API key.
 export const POSTHOG_PROJECT_TOKEN =
 	"phc_LMb2gHTzOA8grLHOZJFsGvfiX2Adcb41Nqbux1EW0yH";
 export interface TelemetrySink {
-	write(events: TelemetryEvent[]): void;
+	write(events: PreparedEvent[]): void;
 	flush(): void;
 	stop(): void;
 	stats(): { dropped: number; failures: number };
 }
 export class MemorySink implements TelemetrySink {
 	events: TelemetryEvent[] = [];
-	write(events: TelemetryEvent[]) {
-		this.events.push(...events);
+	write(events: PreparedEvent[]) {
+		this.events.push(...events.map((record) => record.data));
 	}
 	flush() {}
 	stop() {}
@@ -23,7 +23,7 @@ export class MemorySink implements TelemetrySink {
 	}
 }
 export class IndexedDbSink implements TelemetrySink {
-	private pending: TelemetryEvent[] = [];
+	private pending: PreparedEvent[] = [];
 	private busy = false;
 	private stopped = false;
 	private dropped = 0;
@@ -33,7 +33,7 @@ export class IndexedDbSink implements TelemetrySink {
 			this.failures++;
 		});
 	}
-	write(events: TelemetryEvent[]) {
+	write(events: PreparedEvent[]) {
 		if (this.stopped) return;
 		this.pending.push(...events);
 		if (this.pending.length > 2000)
@@ -45,8 +45,9 @@ export class IndexedDbSink implements TelemetrySink {
 		this.busy = true;
 		const events = this.pending.splice(0, 50);
 		const rows: Omit<LogEntry, "id">[] = [];
-		for (const event of events) {
+		for (const record of events) {
 			try {
+				const event = record.data;
 				rows.push({
 					timestamp: event.properties.t_wall,
 					level: "debug",
@@ -61,7 +62,7 @@ export class IndexedDbSink implements TelemetrySink {
 						event.properties.player_slot === 2
 							? event.properties.player_slot
 							: undefined,
-					sizeBytes: new TextEncoder().encode(JSON.stringify(event)).length,
+					sizeBytes: record.bytes,
 				});
 			} catch {
 				this.dropped++;
@@ -101,20 +102,14 @@ export class PostHogBatchSink implements TelemetrySink {
 		this.fetchImpl = fetchImpl;
 		window.addEventListener("online", this.onOnline);
 	}
-	write(events: TelemetryEvent[]) {
+	write(events: PreparedEvent[]) {
 		if (this.stopped) return;
-		for (const event of events) {
-			try {
-				const json = JSON.stringify(event);
-				const bytes = new TextEncoder().encode(json).length;
-				if (bytes > 47000) {
-					this.dropped++;
-					continue;
-				}
-				this.pending.push({ json, bytes });
-			} catch {
+		for (const record of events) {
+			if (record.bytes > 47000) {
 				this.dropped++;
+				continue;
 			}
+			this.pending.push({ json: record.json, bytes: record.bytes });
 		}
 		if (this.pending.length > 2000)
 			this.dropped += this.pending.splice(0, this.pending.length - 2000).length;

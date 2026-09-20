@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeConfig } from "../../../shared/runtimeConfig";
-import type { TelemetryEvent } from "./events";
+import { prepareEvent, type PreparedEvent } from "./events";
 import { IndexedDbSink, PostHogBatchSink, selectSinks } from "./sinks";
 import { logDB } from "../logging/LogDB";
 vi.mock("../logging/LogDB", () => ({
@@ -20,8 +20,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
-function event(i = 0, text = ""): TelemetryEvent {
-	return {
+function event(i = 0, text = ""): PreparedEvent {
+	return prepareEvent({
 		event: "mm.nav.route",
 		distinct_id: "device",
 		uuid: `id-${i}`,
@@ -39,7 +39,7 @@ function event(i = 0, text = ""): TelemetryEvent {
 			$process_person_profile: false,
 			path: text,
 		},
-	};
+	});
 }
 function sink(fetchImpl: typeof fetch) {
 	const s = new PostHogBatchSink(fetchImpl);
@@ -149,17 +149,4 @@ describe("diagnostic sinks", () => {
 		expect(logDB.addLogs).toHaveBeenCalled();
 		expect(s.stats()).toEqual({ dropped: 1, failures: 1 });
 	});
-});
-
-it("drops unserializable local rows without wedging later IndexedDB writes", async () => {
-	const s = new IndexedDbSink();
-	active.push(s);
-	const bad = event();
-	bad.properties.circular = bad;
-	expect(() => s.write([bad, event(2)])).not.toThrow();
-	await vi.advanceTimersByTimeAsync(0);
-	expect(s.stats().dropped).toBe(1);
-	s.write([event(3)]);
-	await vi.advanceTimersByTimeAsync(0);
-	expect(vi.mocked(logDB.addLogs).mock.lastCall?.[0][0].context?.seq).toBe(3);
 });

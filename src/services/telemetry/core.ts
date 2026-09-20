@@ -1,10 +1,11 @@
 import type { RuntimeConfig } from "../../../shared/runtimeConfig";
+import { prepareEvent } from "./events";
 import { getOffsets } from "./clock";
 import type {
 	EventName,
 	EventProps,
 	TelemetryContext,
-	TelemetryEvent,
+	PreparedEvent,
 } from "./events";
 import {
 	collectDeviceTraits,
@@ -108,7 +109,7 @@ export function flushNow() {
 	clearTimeout(timer);
 	timer = undefined;
 	const started = performance.now();
-	const batch: TelemetryEvent[] = [];
+	const batch: PreparedEvent[] = [];
 	const device = getDeviceIdentity();
 	const pageSession = getPageSessionId();
 	const offsets = getOffsets();
@@ -122,30 +123,32 @@ export function flushNow() {
 		head = (head + 1) % CAPACITY;
 		length--;
 		try {
-			batch.push({
-				event: entry.name,
-				distinct_id: device.id,
-				uuid: crypto.randomUUID(),
-				timestamp: new Date(entry.wall).toISOString(),
-				properties: {
-					...entry.props,
-					...entry.context,
-					...offsets,
-					device_id: device.id,
-					device_label: device.label,
-					page_session_id: pageSession,
-					seq: entry.seq,
-					t_mono: entry.mono,
-					t_wall: entry.wall,
-					t_server:
-						entry.wall +
-						(offsets.offset_http_ms ?? offsets.offset_rtdb_ms ?? 0),
-					input_id: entry.input,
-					environment: config.environment,
-					commit: __BUILD_INFO__.commitHash,
-					$process_person_profile: false,
-				},
-			});
+			batch.push(
+				prepareEvent({
+					event: entry.name,
+					distinct_id: device.id,
+					uuid: crypto.randomUUID(),
+					timestamp: new Date(entry.wall).toISOString(),
+					properties: {
+						...entry.props,
+						...entry.context,
+						...offsets,
+						device_id: device.id,
+						device_label: device.label,
+						page_session_id: pageSession,
+						seq: entry.seq,
+						t_mono: entry.mono,
+						t_wall: entry.wall,
+						t_server:
+							entry.wall +
+							(offsets.offset_http_ms ?? offsets.offset_rtdb_ms ?? 0),
+						input_id: entry.input,
+						environment: config.environment,
+						commit: __BUILD_INFO__.commitHash,
+						$process_person_profile: false,
+					},
+				}),
+			);
 		} catch {
 			invalid++;
 		}

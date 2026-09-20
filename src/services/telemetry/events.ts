@@ -55,3 +55,14 @@ export interface TelemetryEvent {
 		$process_person_profile: false;
 	};
 }
+
+export interface PreparedEvent {
+	data: TelemetryEvent;
+	json: string;
+	bytes: number;
+}
+const encoder = new TextEncoder();
+export function prepareEvent(data: TelemetryEvent): PreparedEvent {
+	const json = JSON.stringify(data);
+	return { data, json, bytes: encoder.encode(json).length };
+}
