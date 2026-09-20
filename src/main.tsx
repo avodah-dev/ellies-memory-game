@@ -7,7 +7,7 @@ import ports from "../local-ports.json";
 import { consumeReloadMarker } from "./utils/reloadApp";
 
 import { startTelemetry, track } from "./services/telemetry/core";
-import { measureHttpOffset } from "./services/telemetry/clock";
+import { startClockCalibration } from "./services/telemetry/clockLifecycle";
 import {
 	getDeviceIdentity,
 	getPageSessionId,
@@ -50,14 +50,7 @@ async function main() {
 		}),
 	);
 	if (config.environment !== "emulator" && config.telemetry === "on") {
-		void measureHttpOffset().then((offsets) => {
-			if (offsets.offset_http_ms !== null)
-				track("mm.clock.offset", {
-					source: "http",
-					offset_ms: offsets.offset_http_ms,
-					rtt_ms: offsets.clock_rtt_ms,
-				});
-		});
+		startClockCalibration();
 		const { default: posthog } = await import("posthog-js");
 		posthog.init(POSTHOG_PROJECT_TOKEN, {
 			api_host: "/ingest",

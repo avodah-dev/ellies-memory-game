@@ -23,8 +23,8 @@ vi.mock("./services/telemetry/core", () => ({
 	startTelemetry: mocks.start,
 	track: vi.fn(),
 }));
-vi.mock("./services/telemetry/clock", () => ({
-	measureHttpOffset: mocks.clock,
+vi.mock("./services/telemetry/clockLifecycle", () => ({
+	startClockCalibration: mocks.clock,
 }));
 vi.mock("./services/telemetry/bindStores", () => ({ bindStores: vi.fn() }));
 beforeEach(() => {
