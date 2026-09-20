@@ -3,6 +3,7 @@ import fastifyStatic from "@fastify/static";
 import { readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { emulatorCsp } from "../shared/emulatorCsp";
+import { RELOAD_QUERY } from "../shared/reload";
 import {
 	parseRuntimeConfig,
 	type RuntimeConfig,
@@ -26,7 +27,14 @@ export async function createServer(options: {
 	const app = Fastify({ logger: options.logger ?? false });
 	// Refuse to serve a deployment with no built entry point.
 	await readFile(join(options.root, "index.html"));
-	app.addHook("onSend", async (_request, reply, payload) => {
+	app.addHook("onSend", async (request, reply, payload) => {
+		if (String(reply.getHeader("Content-Type")).startsWith("text/html")) {
+			reply.header("Cache-Control", "no-store");
+			if (
+				new URL(request.url, "http://localhost").searchParams.has(RELOAD_QUERY)
+			)
+				reply.header("Clear-Site-Data", '"cache"');
+		}
 		reply.header("X-Content-Type-Options", "nosniff");
 		reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
 		if (options.config.environment === "emulator")

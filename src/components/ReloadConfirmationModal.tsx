@@ -5,11 +5,13 @@
 interface ReloadConfirmationModalProps {
 	onCancel: () => void;
 	onConfirm: () => void;
+	isReloading: boolean;
 }
 
 export const ReloadConfirmationModal = ({
 	onCancel,
 	onConfirm,
+	isReloading,
 }: ReloadConfirmationModalProps) => {
 	return (
 		<div className="text-center space-y-6">
@@ -32,13 +34,16 @@ export const ReloadConfirmationModal = ({
 					</svg>
 				</div>
 				<p className="text-gray-600">
-					This will refresh the app. Any unsaved progress may be lost.
+					Clear cached app files and restart Matchimus. Your saved settings will
+					stay, but your current game will end. An internet connection is
+					required.
 				</p>
 			</div>
 			<div className="flex gap-4">
 				<button
 					type="button"
 					onClick={onCancel}
+					disabled={isReloading}
 					className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-3 px-6 rounded-lg transition-colors duration-200"
 				>
 					Cancel
@@ -46,9 +51,10 @@ export const ReloadConfirmationModal = ({
 				<button
 					type="button"
 					onClick={onConfirm}
+					disabled={isReloading}
 					className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200"
 				>
-					Reload
+					{isReloading ? "Reloading…" : "Clear Cache & Reload"}
 				</button>
 			</div>
 		</div>

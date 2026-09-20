@@ -28,7 +28,12 @@ describe("Fly server contract", () => {
 			const page = await server.inject("/online/game");
 			expect(page.statusCode).toBe(200);
 			expect(page.body).toContain("Matchimus");
-			expect(page.headers["cache-control"]).toBe("no-cache");
+			expect(page.headers["cache-control"]).toBe("no-store");
+			expect(page.headers["clear-site-data"]).toBeUndefined();
+			const reload = await server.inject("/?_matchimus_reload=test-nonce");
+			expect(reload.statusCode).toBe(200);
+			expect(reload.headers["cache-control"]).toBe("no-store");
+			expect(reload.headers["clear-site-data"]).toBe('"cache"');
 			expect((await server.inject("/assets/missing.js")).statusCode).toBe(404);
 			expect((await server.inject("/.env")).statusCode).toBe(404);
 			expect((await server.inject("/api/missing")).statusCode).toBe(404);

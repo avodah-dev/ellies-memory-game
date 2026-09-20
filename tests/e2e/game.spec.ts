@@ -5,6 +5,8 @@ import {
 	type Page,
 } from "@playwright/test";
 import ports from "../../local-ports.json" with { type: "json" };
+import { copyFile, rm } from "node:fs/promises";
+
 function watchApplicationErrors(context: BrowserContext, errors: string[]) {
 	const watch = (page: Page) => {
 		page.on("pageerror", (error) => errors.push(error.message));
@@ -67,6 +69,111 @@ async function localRequestsOnly(context: BrowserContext) {
 	});
 }
 test.beforeEach(async ({ context }) => localRequestsOnly(context));
+test.beforeAll(async () => {
+	if (process.env.E2E_SERVER !== "container")
+		await copyFile(
+			"tests/fixtures/reload-worker.js",
+			"dist/__reload-test-worker.js",
+		);
+});
+test.afterAll(async () => {
+	if (process.env.E2E_SERVER !== "container")
+		await rm("dist/__reload-test-worker.js", { force: true });
+});
+
+test("Reload App removes a controlling legacy worker and cached app while preserving saved data", async ({
+	page,
+}) => {
+	await home(page);
+	await page.evaluate(async () => {
+		localStorage.setItem("reload-saved-setting", "keep-me");
+		document.cookie = "reload-session=keep-me; SameSite=Strict; path=/";
+		await new Promise<void>((resolve, reject) => {
+			const request = indexedDB.open("reload-saved-data", 1);
+			request.onupgradeneeded = () =>
+				request.result.createObjectStore("settings");
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => {
+				const db = request.result;
+				const tx = db.transaction("settings", "readwrite");
+				tx.objectStore("settings").put("keep-me", "player");
+				tx.oncomplete = () => {
+					db.close();
+					resolve();
+				};
+				tx.onerror = () => reject(tx.error);
+			};
+		});
+		const cache = await caches.open("matchimus-legacy-test");
+		await cache.put(
+			"/",
+			new Response("<html><body>Obsolete cached app</body></html>", {
+				headers: { "Content-Type": "text/html" },
+			}),
+		);
+		await navigator.serviceWorker.register("/__reload-test-worker.js", {
+			scope: "/",
+		});
+		await navigator.serviceWorker.ready;
+	});
+	await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+	expect(
+		await page.evaluate(async () => (await fetch("/__reload-probe")).text()),
+	).toBe("legacy-worker");
+	await page.getByRole("button", { name: "Reload App", exact: true }).click();
+	const navigation = page.waitForResponse(
+		(response) =>
+			response.request().isNavigationRequest() &&
+			new URL(response.url()).searchParams.has("_matchimus_reload"),
+	);
+	await page
+		.getByRole("button", { name: "Clear Cache & Reload", exact: true })
+		.click();
+	const response = await navigation;
+	expect(response.fromServiceWorker()).toBe(false);
+	if (process.env.E2E_SERVER === "container") {
+		const headers = await response.allHeaders();
+		expect(headers["cache-control"]).toBe("no-store");
+		expect(headers["clear-site-data"]).toBe('"cache"');
+	}
+	await expect(
+		page.getByRole("button", { name: /Play Online Challenge/ }),
+	).toBeVisible();
+	await expect(page).toHaveURL(test.info().project.use.baseURL + "/");
+	expect(
+		await page.evaluate(async () => ({
+			workers: (await navigator.serviceWorker.getRegistrations()).length,
+			controller: navigator.serviceWorker.controller !== null,
+			caches: await caches.keys(),
+			setting: localStorage.getItem("reload-saved-setting"),
+			cookie: document.cookie.includes("reload-session=keep-me"),
+			indexedSetting: await new Promise((resolve, reject) => {
+				const request = indexedDB.open("reload-saved-data", 1);
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () => {
+					const db = request.result;
+					const read = db
+						.transaction("settings")
+						.objectStore("settings")
+						.get("player");
+					read.onsuccess = () => {
+						db.close();
+						resolve(read.result);
+					};
+					read.onerror = () => reject(read.error);
+				};
+			}),
+		})),
+	).toEqual({
+		workers: 0,
+		controller: false,
+		caches: [],
+		setting: "keep-me",
+		cookie: true,
+		indexedSetting: "keep-me",
+	});
+});
+
 test("complete a local game using keyboard and pointer, then replay", async ({
 	page,
 }) => {
@@ -93,6 +200,58 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 		8,
 	);
 });
+test("named players start a 16-pair Thanksgiving game with strict rules", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await browser.newContext({
+		baseURL: test.info().project.use.baseURL,
+		...test.info().project.use,
+	});
+	watchApplicationErrors(guestContext, applicationErrors);
+	await localRequestsOnly(guestContext);
+	try {
+		const guest = await guestContext.newPage();
+		await home(host);
+		await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await host.getByLabel("Your online name").fill("Nate");
+		await host.getByRole("button", { name: /create.*room/i }).click();
+		await expect(host).toHaveURL(/\/online\/waiting$/);
+		await host.getByRole("button", { name: /Choose Theme/ }).click();
+		await host.getByRole("button", { name: /Thanksgiving Feast/ }).click();
+		await host.getByRole("button", { name: /40.*cards/i }).click();
+		await host.getByRole("button", { name: /^16 .*Hard$/ }).click();
+		const code = (await host.getByTestId("room-code").textContent())!.trim();
+		await home(guest);
+		await guest.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await guest.getByLabel("Your online name").fill("Nora");
+		await guest.getByRole("button", { name: /join.*room/i }).click();
+		await guest.getByPlaceholder("ABCD").fill(code);
+		await guest.getByRole("button", { name: "Join Game", exact: true }).click();
+		await expect(guest).toHaveURL(/\/online\/waiting$/);
+		await expect(host.getByText("Nora", { exact: true })).toBeVisible();
+		await expect(guest.getByText("Nate", { exact: true })).toBeVisible();
+		await host.getByRole("button", { name: "Start Game", exact: true }).click();
+		for (const page of [host, guest]) {
+			await expect(page).toHaveURL(/\/online\/game$/);
+			await expect(
+				page.locator("main button[data-card-id]:enabled"),
+			).toHaveCount(32);
+			await expect(
+				page.locator('main img[src*="/deck-images/thanksgiving/"]'),
+			).toHaveCount(32);
+		}
+		await card(host, 0).click();
+		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
+		await card(host, 1).click();
+		await expect(card(host, 0)).toHaveCount(0);
+		await expect(card(guest, 0)).toHaveCount(0);
+	} finally {
+		await guestContext.close();
+	}
+});
+
 for (const transport of ["default", "polling"] as const) {
 	test(`two isolated players synchronize, pause, reconnect and replay (${transport})`, async ({
 		browser,
