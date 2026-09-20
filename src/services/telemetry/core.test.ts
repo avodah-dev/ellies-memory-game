@@ -10,7 +10,12 @@ import {
 	track,
 } from "./core";
 import { MemorySink } from "./sinks";
-import { resetClockForTests, setRtdbOffset } from "./clock";
+import {
+	resetClockForTests,
+	setRtdbOffset,
+	measureHttpOffset,
+	invalidateHttpClock,
+} from "./clock";
 vi.mock("../logging/LogDB", () => ({
 	logDB: {
 		addLogs: vi.fn().mockResolvedValue(undefined),
@@ -166,8 +171,8 @@ it("captures calibration at enqueue, so a later sample cannot rewrite buffered e
 		offset_rtdb_ms: null,
 	});
 	expect(sink.events[2].properties).toMatchObject({
-		t_server: sink.events[2].properties.t_wall + 10,
-		clock_reference: "rtdb",
+		t_server: null,
+		clock_reference: "uncalibrated",
 		offset_rtdb_ms: 10,
 	});
 });
@@ -205,4 +210,39 @@ it("reports the maximum drain including sink dispatch for each health interval, 
 		sink.events.filter((e) => e.event === "mm.telemetry.health")[1].properties
 			.drain_ms_max,
 	).toBe(2);
+});
+
+it("keeps the capture-time Fly anchor when a queued event drains after invalidation", async () => {
+	const sink = new MemorySink();
+	vi.spyOn(performance, "now").mockReturnValue(100);
+	vi.spyOn(Date, "now").mockReturnValue(14500);
+	startTelemetry(local, [sink]);
+	await measureHttpOffset(
+		undefined,
+		vi
+			.fn<typeof fetch>()
+			.mockImplementation(async () => new Response('{"now":100000}')),
+	);
+	track("mm.nav.route", { path: "/fly-calibrated" });
+	invalidateHttpClock();
+	flushNow();
+	expect(sink.events.at(-1)?.timestamp).toBe("1970-01-01T00:01:40.000Z");
+	expect(sink.events.at(-1)?.properties).toMatchObject({
+		t_server: 100000,
+		clock_reference: "fly-monotonic",
+		clock_sample_id: 1,
+	});
+});
+
+it("omits uncalibrated PostHog timestamps instead of indexing by a badly dated device", () => {
+	vi.spyOn(Date, "now").mockReturnValue(1);
+	const sink = new MemorySink();
+	startTelemetry(local, [sink]);
+	track("mm.nav.route", { path: "/bad-wall" });
+	flushNow();
+	const event = sink.events.at(-1)!;
+	expect(event.properties.t_wall).toBe(1);
+	expect(event.properties.t_server).toBeNull();
+	expect(event.timestamp).toBeUndefined();
+	expect(JSON.parse(JSON.stringify(event))).not.toHaveProperty("timestamp");
 });

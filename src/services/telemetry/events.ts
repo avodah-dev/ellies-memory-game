@@ -3,6 +3,10 @@ import type { RuntimeConfig } from "../../../shared/runtimeConfig";
 import type { GameplayEvents } from "./gameplayEvents";
 
 export interface EventProps extends GameplayEvents {
+	"mm.clock.calibration": {
+		reason: string;
+		status: "ok" | "failed" | "invalidated";
+	};
 	"mm.conntest.start": Record<string, string | number | boolean | null>;
 	"mm.conntest.result": Record<string, string | number | boolean | null>;
 	"mm.conntest.done": Record<string, string | number | boolean | null>;
@@ -47,7 +51,7 @@ export interface TelemetryEvent {
 	event: EventName;
 	distinct_id: string;
 	uuid: string;
-	timestamp: string;
+	timestamp?: string;
 	properties: Record<string, unknown> & {
 		device_id: string;
 		device_label: string;
@@ -56,7 +60,7 @@ export interface TelemetryEvent {
 		t_mono: number;
 		t_wall: number;
 		t_server: number | null;
-		clock_reference: "rtdb" | "uncalibrated";
+		clock_reference: "fly-monotonic" | "uncalibrated";
 		environment: RuntimeConfig["environment"];
 		commit: string;
 		$process_person_profile: false;

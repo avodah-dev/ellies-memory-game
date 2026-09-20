@@ -134,17 +134,22 @@ export function flushNow() {
 		head = (head + 1) % CAPACITY;
 		length--;
 		try {
+			const clock = clockProperties(entry.clock, entry.wall, entry.mono);
 			batch.push(
 				prepareEvent({
 					event: entry.name,
 					distinct_id: device.id,
 					uuid: crypto.randomUUID(),
-					timestamp: new Date(entry.wall).toISOString(),
+					// Uncalibrated events use PostHog receipt-time indexing only.
+					timestamp:
+						clock.t_server === null
+							? undefined
+							: new Date(clock.t_server).toISOString(),
 					properties: {
 						input_id: entry.input,
 						...entry.context,
 						...entry.props,
-						...clockProperties(entry.clock, entry.wall, entry.mono),
+						...clock,
 						device_id: device.id,
 						device_label: device.label,
 						page_session_id: pageSession,
