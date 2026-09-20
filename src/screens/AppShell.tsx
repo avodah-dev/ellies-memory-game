@@ -1,3 +1,4 @@
+import { track } from "../services/telemetry/core";
 import { useOnlineStore } from "../stores/onlineStore";
 import { Outlet } from "@tanstack/react-router";
 import screenfull from "screenfull";
@@ -218,7 +219,10 @@ export function AppShell({ model }: { model: AppModel }) {
 									<button
 										type="button"
 										className="mt-4 rounded bg-indigo-600 px-4 py-2 text-white"
-										onClick={() => void onlineGame.resynchronize()}
+										onClick={() => {
+											track("mm.sync.resync", { phase: "manual-reconnect" });
+											void onlineGame.resynchronize();
+										}}
 									>
 										Reconnect
 									</button>

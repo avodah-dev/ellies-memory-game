@@ -1,3 +1,4 @@
+import { connectionSignal } from "./connection";
 import { useOnlineStore } from "../../stores/onlineStore";
 import { setContext, track } from "./core";
 
@@ -24,6 +25,8 @@ export function bindStores() {
 				is_host: isHost,
 				player_slot: roomCode ? (isHost ? 1 : 2) : null,
 			});
+			if (opponentConnected !== previous[5])
+				connectionSignal(roomCode, "opponent", opponentConnected);
 			if (status !== previous[3]) track("mm.room.status", { status });
 			if (
 				connectionStatus !== previous[4] ||

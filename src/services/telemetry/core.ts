@@ -138,8 +138,9 @@ export function flushNow() {
 					uuid: crypto.randomUUID(),
 					timestamp: new Date(entry.wall).toISOString(),
 					properties: {
-						...entry.props,
+						input_id: entry.input,
 						...entry.context,
+						...entry.props,
 						...clockProperties(entry.clock, entry.wall, entry.mono),
 						device_id: device.id,
 						device_label: device.label,
@@ -147,7 +148,6 @@ export function flushNow() {
 						seq: entry.seq,
 						t_mono: entry.mono,
 						t_wall: entry.wall,
-						input_id: entry.input,
 						environment: config.environment,
 						commit: __BUILD_INFO__.commitHash,
 						$process_person_profile: false,

@@ -69,6 +69,87 @@ async function localRequestsOnly(context: BrowserContext) {
 		return route.continue();
 	});
 }
+type DiagnosticRow = {
+	message: string;
+	context: Record<string, string | number | boolean | null>;
+};
+async function diagnostics(page: Page): Promise<DiagnosticRow[]> {
+	return page.evaluate(
+		() =>
+			new Promise((resolve, reject) => {
+				const request = indexedDB.open("matchimus-logs");
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () => {
+					const db = request.result;
+					const logs = db.transaction("logs").objectStore("logs").getAll();
+					logs.onerror = () => {
+						db.close();
+						reject(logs.error);
+					};
+					logs.onsuccess = () => {
+						db.close();
+						resolve(logs.result.filter((row) => row.message.startsWith("mm.")));
+					};
+				};
+			}),
+	);
+}
+async function expectFlipDiagnostics(host: Page, guest: Page) {
+	await expect
+		.poll(async () => {
+			const [h, g] = await Promise.all([diagnostics(host), diagnostics(guest)]);
+			const write = h.find(
+				(row) =>
+					row.message === "mm.sync.write.result" &&
+					row.context.ok === true &&
+					row.context.context === "flip:card-0",
+			);
+			if (!write) return false;
+			const version = write.context.sync_version,
+				round = write.context.game_round;
+			const click = h.find(
+				(row) =>
+					row.message === "mm.input.click" &&
+					row.context.card_id === "card-0" &&
+					row.context.input_id === write.context.input_id,
+			);
+			const matching = (row: DiagnosticRow) =>
+				row.context.sync_version === version &&
+				row.context.game_round === round;
+			return Boolean(
+				click &&
+					h.some(
+						(row) =>
+							row.message === "mm.input.pointer" &&
+							row.context.phase === "down" &&
+							row.context.gesture_id === click.context.gesture_id,
+					) &&
+					g.some(
+						(row) =>
+							row.message === "mm.sync.snapshot.gate" &&
+							row.context.decision === "accepted" &&
+							matching(row),
+					) &&
+					g.some(
+						(row) =>
+							row.message === "mm.render.painted" &&
+							row.context.phase === "after-frame-task" &&
+							matching(row),
+					) &&
+					[h, g].every((rows) =>
+						["browser", "rtdb", "opponent"].every((source) =>
+							rows.some(
+								(row) =>
+									row.message === "mm.conn.input" &&
+									row.context.game_round === round &&
+									row.context.source === source,
+							),
+						),
+					),
+			);
+		})
+		.toBe(true);
+}
 test.beforeEach(async ({ context }) => localRequestsOnly(context));
 test.beforeAll(async () => {
 	if (process.env.E2E_SERVER !== "container")
@@ -343,6 +424,7 @@ for (const transport of ["default", "polling"] as const) {
 			await expect(guest).toHaveURL(/\/online\/game$/);
 			await card(host, 0).click();
 			await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
+			if (transport === "default") await expectFlipDiagnostics(host, guest);
 			await guestContext.setOffline(true);
 			await expect(
 				guest.getByRole("heading", { name: "Game paused" }),
@@ -362,6 +444,40 @@ for (const transport of ["default", "polling"] as const) {
 			for (let id = 2; id < count + 2; id += 2) await match(host, id);
 			await expect(host).toHaveURL(/\/game-over$/);
 			await expect(guest).toHaveURL(/\/game-over$/);
+			if (transport === "default")
+				await expect
+					.poll(async () => {
+						const rows = await diagnostics(host);
+						return (
+							rows.some(
+								(row) =>
+									row.message === "mm.sync.write.result" &&
+									row.context.ok === true &&
+									row.context.game_status === "finished",
+							) &&
+							rows.some(
+								(row) =>
+									row.message === "mm.game.finish_check" &&
+									row.context.finished === true,
+							) &&
+							rows.some(
+								(row) =>
+									row.message === "mm.nav.results_timer" &&
+									row.context.phase === "scheduled",
+							) &&
+							rows.some(
+								(row) =>
+									row.message === "mm.nav.results_timer" &&
+									row.context.phase === "fired",
+							) &&
+							rows.some(
+								(row) =>
+									row.message === "mm.nav.route" &&
+									row.context.path === "/game-over",
+							)
+						);
+					})
+					.toBe(true);
 			await host.getByRole("button", { name: /play again/i }).click();
 			await host.getByRole("button", { name: /replay/i }).click();
 			await expect(host).toHaveURL(/\/online\/game$/);

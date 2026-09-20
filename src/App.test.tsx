@@ -32,7 +32,7 @@ import type { Card, GameStatus } from "./types";
 // Mock TanStack Router
 // ============================================
 
-const mockNavigate = vi.fn();
+const mockNavigate = vi.fn().mockResolvedValue(undefined);
 const mockRouterState = { location: { pathname: "/" } };
 
 vi.mock("@tanstack/react-router", () => ({

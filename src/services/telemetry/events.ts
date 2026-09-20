@@ -1,6 +1,8 @@
 import type { RuntimeConfig } from "../../../shared/runtimeConfig";
 
-export interface EventProps {
+import type { GameplayEvents } from "./gameplayEvents";
+
+export interface EventProps extends GameplayEvents {
 	"mm.session.start": Record<string, string | number | boolean | null>;
 	"mm.app.boot": { phase: string; ms_elapsed: number };
 	"mm.app.error": {

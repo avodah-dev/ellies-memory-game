@@ -79,6 +79,30 @@ describe("telemetry core", () => {
 			input_id: null,
 		});
 	});
+	it("retains explicit async input and revision instead of the newer global context", async () => {
+		const sink = new MemorySink();
+		startTelemetry(local, [sink]);
+		const originalInput = beginInput();
+		await Promise.resolve();
+		setContext({ game_round: 2, sync_version: 9 });
+		beginInput();
+		track("mm.sync.write.result", {
+			write_id: "older-write",
+			transaction_id: "older-transaction",
+			attempts: 1,
+			ms_tx_total: 10,
+			ok: true,
+			input_id: originalInput,
+			game_round: 1,
+			sync_version: 3,
+		});
+		flushNow();
+		expect(sink.events.at(-1)?.properties).toMatchObject({
+			input_id: originalInput,
+			game_round: 1,
+			sync_version: 3,
+		});
+	});
 	it("drains in bounded slices, re-arms and flushes on pagehide/hidden", async () => {
 		const sink = new MemorySink();
 		startTelemetry(local, [sink]);
