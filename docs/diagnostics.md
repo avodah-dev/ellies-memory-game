@@ -132,7 +132,7 @@ The stale `triggerGameFinish` comment mentions a GameBoard callback, but current
 
 ## Investigation queries
 
-Use a fresh room with both devices on the same instrumentation build. Claude validated the original eight query blocks against project 261647 on 2026-09-20 and confirmed boolean filters on stored TUFL events. That validates syntax and boolean semantics, not a complete gameplay baseline. The additional queries and timestamp bounds below still need PostHog execution; the remote-delivery join was added after that eight-query revision. Use the clock-coverage query above first. Single-device durations are monotonic; cross-device differences remain estimates and may be negative because of calibration uncertainty.
+Use a fresh room with both devices on the same instrumentation build. Claude validated all twelve SQL blocks at documentation commit `bf495e8` against production room RAWR in project 261647 on 2026-09-20, including timestamp bounds, the unmatched-gesture CTE, dropped-work queries and the three-way delivery join. Three queries had output limits to cap returned rows. The unmatched-gesture and dropped-write queries returned no rows; all observed pointer input was mouse. Boolean filters were also confirmed on TUFL data. The later rejection-to-turn-acceptance query added in `475e31d` still awaits HogQL execution. This validates those queries on smoke-test data, not a complete real-device baseline. Use the clock-coverage query above first. Single-device durations are monotonic; cross-device differences remain estimates and may be negative because of calibration uncertainty.
 
 Flip acceptance and rejection by device:
 
@@ -359,6 +359,32 @@ GROUP BY writer, receiver, receiver_session
 ```
 
 This query uses the earliest accepted/painted occurrence of a revision per receiving page session. For repeated resynchronizations, use the detailed `apply_id` records instead. `committed_at` is the writer's transaction-promise completion observation; a peer may receive the commit before that promise resolves. Negative commit-to-accept estimates therefore need not be clock error. These samples do not measure Firestore server processing time, and sample absence can mean filtering or a cancelled paint rather than missing delivery. Use the raw snapshot and cancellation events to audit excluded revisions.
+
+### Interpreting directional differences
+
+Do not assume symmetric delivery merely because both browser sessions run on one Mac. They have separate Firebase connections, request histories, callbacks and accepted-revision samples. The measured cross-device difference combines peer snapshot arrival, writer transaction-promise acknowledgement timing, scheduling and calibration error. The writer observation is not the server's commit timestamp.
+
+Averaging the two directional medians can cancel a constant relative clock bias. What remains is an average of the two underlying observation-delay medians, not an identified one-way network latency. Interpreting that midpoint as a common delivery delay, and the half-difference as clock error, additionally requires symmetric observation delays and comparable samples with stable calibration. These are not paired NTP exchanges. Report the **directional midpoint** alongside both directions and sample counts if useful; do not label it true delivery. The half-difference also includes genuine directional differences and sampling variation, so it is not an uncertainty bound or an identified per-device clock error.
+
+For RAWR, the reported medians were −4 ms host→guest (15 samples) and +135 ms guest→host (3 samples). Their midpoint is 65.5 ms and half-difference 69.5 ms. Those arithmetic results alone establish neither “true delivery = 65.5 ms” nor “each device has ±69.5 ms offset error.” The reported Fly-minus-RTDB estimates differed by 62.2 ms (guest 81.9 ms, host 19.7 ms), consistent with differing calibration estimates; HTTP sample delay/asymmetry and sample ages also contribute, so this is not independent ground truth for RTDB error.
+
+The current RTDB offset observer exposes a scalar offset without a paired RTT measurement. The Connection Test's acknowledged-write RTT is a different operation and cannot rank the accuracy of those offset observations. Adding `fly_rtdb_skew_ms` to RTDB-calibrated time would algebraically replace its correction with the HTTP correction (`t_wall + offset_http_ms`); it is not an independent improvement to the RTDB reference. Retain RTDB as the single merged reference for this instrumentation release, keep directional estimates labelled, and prioritize same-device monotonic durations. Any future calibration change needs its own measured validation.
+
+### Verified RAWR smoke measurements
+
+Claude queried production room RAWR on build `657931f`. Host 5D3C is device `f6cf3b3c…`; guest FA9A is `95d8e451…`.
+
+| Metric | Host 5D3C | Guest FA9A |
+| --- | --- | --- |
+| Tap→transaction completion, median / p95 | 175 / 232 ms (10 samples) | 197 / 215 ms (2 samples) |
+| Maximum transaction attempts | 1 | 1 |
+| Accepted snapshot→paint opportunity, median / p95 | Not reported | 9.6 / 17.6 ms |
+| Raw snapshot candidate / missing | 19 / 3 | 20 / 1 |
+| Snapshot gate accepted / self-echo | 3 / 16 | 16 / 3 |
+| Telemetry dropped / sink failures | 0 / 0 | 0 / 0 |
+| Maximum drain duration | 1.7 ms | 2.1 ms |
+
+The paint measure is an estimated paint opportunity, not physical display completion. The small, unequal sample counts and mouse-only input make this a smoke verification, not the MacBook/iPad baseline or proof of a performance regression. Empty dropped-write/long-frame results mean none were observed in this capture, not that those paths cannot occur.
 
 Delayed writes, timers and paint tasks retain the room/role context captured when scheduled, so completing or cancelling after a room change cannot assign them to the new room.
 
