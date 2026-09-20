@@ -95,7 +95,7 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 
 | Events | Main fields / interpretation |
 | --- | --- |
-| `mm.conn.input` | `source`: browser/rtdb/opponent; `value`; round/revision. Raw callback observations have `observation='signal'`; layout observations record all three current inputs. Each new round/status gets a complete snapshot even if the inputs did not change. |
+| `mm.conn.input` | `source`: browser/rtdb/opponent; `value`; round/revision. `observation='signal'` identifies raw callbacks; an absent/null `observation` identifies a full state snapshot. Layout effect runs and each new round/status record all three current inputs even if unchanged. Neither callback nor snapshot counts equal connection transitions. |
 | `mm.conn.ready` | `ready`, `browser_online`, `rtdb_connected`, `opponent_connected`. Reports the committed composite; it does not participate in readiness. |
 | `mm.input.pointer` | `card_id`, `phase`: down/up/cancel, `pointer_type`, `pointer_id`, `gesture_id`. Record-only React handlers; no preventDefault, capture, propagation or touch-action changes. |
 | `mm.input.click` | `card_id`, `input_id`, `gesture_id`, `pointer_type`, `ms_down_to_click`. Keyboard/unmatched/cancelled gestures have null pointer latency. Older click events without pointer IDs are associated only when one gesture is unambiguous. |
@@ -126,6 +126,8 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 
 Frame/timer/performance observers run only on visible `/online/game` and `/local/game` routes and stop on results navigation or hidden visibility. For a controlled observer-cost comparison on preview, set sessionStorage `matchimus-frame-sampler` to `off` and reload, then remove that key and reload to enable. This turns off the performance samplers only, not input/sync/paint diagnostics or SDK analytics. Compare `drain_ms_max` as well. Never infer Safari performance from Chromium-only observer support.
 
+To investigate connection flaps, filter `mm.conn.input` to `observation='signal'`, order by `seq` within device/page session/source, and compare successive `value` observations. Repeated equal callbacks are not transitions; the first observation establishes initial state. Use the null-observation snapshots and `mm.conn.ready` for the complete readiness inputs at round start, not for counting flaps. The existing discriminator distinguishes callback from snapshot, not change from no change; no additional `kind` field is required.
+
 The stale `triggerGameFinish` comment mentions a GameBoard callback, but current production completion uses `checkAndFinishGame` followed by the results effect. Tests and investigation should follow the active path. A cancelled results timer with no later schedule is different from a scheduled timer that fires late; timer IDs, elapsed times, frame/drift windows, final-write results, committed game status and route resolution distinguish these cases.
 
 ## Investigation queries
@@ -143,6 +145,48 @@ WHERE timestamp > now() - INTERVAL 7 DAY
 GROUP BY device, round, result
 ORDER BY device, round, result
 ```
+
+Out-of-turn rejections and the next accepted snapshot giving that same device its turn, within the same round/page session. This produces one row per rejection, including a null delay when no matching later acceptance was captured. The flip-count query above supplies total rejections; do not omit unmatched rows from the audit. Both timestamps are monotonic on the receiving device, so this delay does not depend on cross-device clock calibration.
+
+```sql
+WITH rejections AS (
+    SELECT properties.device_id AS device,
+           properties.page_session_id AS session,
+           properties.game_round AS round,
+           properties.local_slot AS slot,
+           properties.input_id AS input_id,
+           toInt(properties.seq) AS rejected_seq,
+           toFloat(properties.t_mono) AS rejected_mono
+    FROM events
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND properties.room_code = 'ROOM'
+      AND event = 'mm.game.flip' AND properties.result = 'not-your-turn'
+      AND properties.mode = 'online' AND properties.local_slot IS NOT NULL
+), accepted AS (
+    SELECT properties.device_id AS device,
+           properties.page_session_id AS session,
+           properties.game_round AS round,
+           properties.current_player AS player,
+           toInt(properties.seq) AS accepted_seq,
+           toFloat(properties.t_mono) AS accepted_mono
+    FROM events
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND properties.room_code = 'ROOM'
+      AND event = 'mm.sync.snapshot.gate' AND properties.decision = 'accepted'
+      AND properties.game_status = 'playing'
+)
+SELECT r.device, r.session, r.round, r.slot, r.input_id, r.rejected_seq,
+       nullIf(minIf(a.accepted_mono, a.accepted_seq > r.rejected_seq), 0)
+           - r.rejected_mono AS rejection_to_turn_accept_ms
+FROM rejections AS r
+LEFT JOIN accepted AS a ON r.device = a.device AND r.session = a.session
+    AND r.round = a.round AND r.slot = a.player
+GROUP BY r.device, r.session, r.round, r.slot, r.input_id,
+         r.rejected_seq, r.rejected_mono
+ORDER BY r.device, r.session, r.rejected_seq
+```
+
+A positive delay establishes that the click preceded a later accepted own-turn state; it does not establish what was visually displayed or why delivery took that long. Several rejected clicks can map to the same acceptance. A resynchronization may grant the turn outside the snapshot gate, leaving a null here; inspect `mm.sync.resync` and `mm.state.applied` before calling it missing delivery. Use a new instrumentation build: the stale revision metadata in preview build `548a89b` was corrected before production build `657931f`.
 
 Pointer/click counts and readiness changes:
 
