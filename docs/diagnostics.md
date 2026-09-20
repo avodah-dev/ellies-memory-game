@@ -10,6 +10,8 @@ The room connection hook observes `.info/serverTimeOffset` without changing game
 
 RTDB offset is an estimate, not a precision latency measurement. [Firebase documents that network latency affects its accuracy](https://firebase.google.com/docs/database/web/offline-capabilities#clock-skew), making it most useful for detecting discrepancies above one second. The HTTP ping RTT is **not** an uncertainty bound for RTDB calibration. Use `performance.now()` durations for same-device latency, and state clock uncertainty when reporting cross-device timings. Display sample ages and flag old samples; the current implementation does not silently expire or replace them while connected.
 
+Both offsets are **server-minus-device corrections**: an offset of −14500 ms means the device clock is approximately 14.5 seconds fast relative to that reference. On 2026-09-20, Claude confirmed this Mac was 14.508 seconds fast using SNTP and independent HTTP references; the approximately −14.5-second offsets were device clock error, not Fly drift. Correcting the device clock during an open session can invalidate cached calibration; reload before recording the baseline.
+
 HTTP offset remains useful for Connection Test's RTT/offset display. `fly_rtdb_skew_ms = offset_http_ms - offset_rtdb_ms` is an estimated Fly-minus-RTDB clock difference, emitted on every event including health when both samples exist. A negative value means the sampled Fly time was behind the sampled RTDB time. Measurements may have different ages and asymmetric network delays; this is a diagnostic signal, not proof of VM drift or a basis for correcting timestamps.
 
 `fly.preview.toml` configures `auto_stop_machines = "stop"` and zero warm machines. Production keeps one machine warm. Stopping differs from suspending; these settings do not establish why a clock offset occurred. No Fly lifecycle setting is changed by diagnostics.
@@ -25,7 +27,7 @@ HTTP offset remains useful for Connection Test's RTT/offset display. `fly_rtdb_s
 
 ## HogQL queries
 
-Replace `ROOM` with the new room code. First check calibration coverage for **both** devices/page sessions; an empty or one-sided calibrated timeline is not a successful baseline. These query examples must be exercised against the released schema before baseline sign-off.
+Replace `ROOM` with the new room code. Every event-table scan has a seven-day timestamp bound; narrow it to the capture window and environment/build for a real investigation, especially if a room code has been reused. PostHog `timestamp` follows device wall time for these events: allow clock-error margin at the window edges. The bound limits scanned data; it does not calibrate event ordering. First check calibration coverage for **both** devices/page sessions; an empty or one-sided calibrated timeline is not a successful baseline. These query examples must be exercised against the released schema before baseline sign-off.
 
 ```sql
 SELECT
@@ -36,7 +38,8 @@ SELECT
     min(toInt(properties.seq)) AS first_seq,
     max(toInt(properties.seq)) AS last_seq
 FROM events
-WHERE event LIKE 'mm.%' AND properties.room_code = 'ROOM'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event LIKE 'mm.%' AND properties.room_code = 'ROOM'
 GROUP BY device, session, reference
 ORDER BY device, session, reference
 ```
@@ -54,7 +57,8 @@ SELECT
     properties.clock_rtdb_age_ms AS calibration_age_ms,
     properties.fly_rtdb_skew_ms AS fly_rtdb_skew_ms
 FROM events
-WHERE event LIKE 'mm.%'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event LIKE 'mm.%'
   AND properties.room_code = 'ROOM'
   AND properties.clock_reference = 'rtdb'
   AND properties.offset_rtdb_ms IS NOT NULL
@@ -76,7 +80,8 @@ SELECT
     max(toInt(properties.sink_failures)) AS sink_failures,
     max(abs(toFloat(properties.fly_rtdb_skew_ms))) AS max_clock_difference_ms
 FROM events
-WHERE event = 'mm.telemetry.health'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event = 'mm.telemetry.health'
   AND properties.room_code = 'ROOM'
   AND properties.drain_ms_max IS NOT NULL
 GROUP BY device, session, build
@@ -125,7 +130,7 @@ The stale `triggerGameFinish` comment mentions a GameBoard callback, but current
 
 ## Investigation queries
 
-Use a fresh room with both devices on the same instrumentation build. The queries below are examples pending execution against the released PostHog schema. Use the clock-coverage query above first. Single-device durations are monotonic; cross-device differences remain estimates and may be negative because of calibration uncertainty.
+Use a fresh room with both devices on the same instrumentation build. Claude validated the original eight query blocks against project 261647 on 2026-09-20 and confirmed boolean filters on stored TUFL events. That validates syntax and boolean semantics, not a complete gameplay baseline. The additional queries and timestamp bounds below still need PostHog execution; the remote-delivery join was added after that eight-query revision. Use the clock-coverage query above first. Single-device durations are monotonic; cross-device differences remain estimates and may be negative because of calibration uncertainty.
 
 Flip acceptance and rejection by device:
 
@@ -133,7 +138,8 @@ Flip acceptance and rejection by device:
 SELECT properties.device_label AS device, properties.game_round AS round,
        properties.result AS result, count() AS flips
 FROM events
-WHERE event = 'mm.game.flip' AND properties.room_code = 'ROOM'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event = 'mm.game.flip' AND properties.room_code = 'ROOM'
 GROUP BY device, round, result
 ORDER BY device, round, result
 ```
@@ -144,7 +150,8 @@ Pointer/click counts and readiness changes:
 SELECT properties.device_label AS device, event, properties.phase AS phase,
        properties.pointer_type AS pointer_type, count() AS count
 FROM events
-WHERE properties.room_code = 'ROOM'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND properties.room_code = 'ROOM'
   AND event IN ('mm.input.pointer', 'mm.input.click')
 GROUP BY device, event, phase, pointer_type
 ORDER BY device, event, phase
@@ -152,13 +159,40 @@ ORDER BY device, event, phase
 
 Do not equate down-minus-click count with a defect: cancelled gestures, scrolling, matched/disabled cards, leaving the page and keyboard activation have different paths. Join each click's non-null gesture ID to its pointer records within the same device/page session and inspect card IDs and cancellations.
 
+Pointer-down gestures with no associated click, grouped by device/session and pointer type. Use `gesture_id`, not `input_id`: input IDs are created at click time. The cancelled subset helps distinguish intentional gesture cancellation from other unmatched downs; neither count alone proves a dropped tap. Run after the capture finishes and batches drain, since an in-flight click or a window boundary can leave a down temporarily unmatched.
+
+```sql
+WITH gestures AS (
+    SELECT properties.device_id AS device,
+           properties.page_session_id AS session,
+           properties.gesture_id AS gesture,
+           argMin(properties.pointer_type, toFloat(properties.t_mono)) AS pointer_type,
+           countIf(event = 'mm.input.pointer' AND properties.phase = 'down') AS downs,
+           countIf(event = 'mm.input.pointer' AND properties.phase = 'cancel') AS cancels,
+           countIf(event = 'mm.input.click') AS clicks
+    FROM events
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND properties.room_code = 'ROOM'
+      AND event IN ('mm.input.pointer', 'mm.input.click')
+      AND properties.gesture_id IS NOT NULL
+    GROUP BY device, session, gesture
+)
+SELECT device, session, pointer_type,
+       count() AS gestures_without_click,
+       countIf(cancels > 0) AS cancelled_gestures
+FROM gestures
+WHERE downs > 0 AND clicks = 0
+GROUP BY device, session, pointer_type
+```
+
 ```sql
 SELECT properties.device_label, properties.seq, properties.game_round,
        properties.source, properties.value, properties.observation,
        properties.ready, properties.browser_online,
        properties.rtdb_connected, properties.opponent_connected
 FROM events
-WHERE properties.room_code = 'ROOM'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND properties.room_code = 'ROOM'
   AND event IN ('mm.conn.input', 'mm.conn.ready')
 ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
 ```
@@ -172,12 +206,39 @@ SELECT properties.device_label AS device,
        quantile(0.95)(toFloat(properties.ms_input_to_commit)) AS p95_input_to_commit_ms,
        max(toInt(properties.attempts)) AS max_attempts
 FROM events
-WHERE event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
   AND properties.ok = true AND properties.ms_input_to_commit IS NOT NULL
 GROUP BY device
 ```
 
 Join a write result to remote acceptance on room, game_round and sync_version, with **different device IDs**, and require `clock_reference='rtdb'` on both rows. Join remote acceptance to `mm.state.applied` and `mm.render.painted` on the receiving device/page session and revision, using the paint's apply ID to disambiguate reapplications. Use `ms_apply_to_paint` directly for that same-device duration. Exclude `phase='cancelled-before-task'` from latency aggregates but count those cancellations when investigating skipped states. Compare the complete tuple, not sync_version alone: replay resets revision numbers.
+
+Dropped work and snapshot decisions, grouped separately by observation layer. Raw candidates are not accepted snapshots; do not add counts across layers as if they represented different delivered states.
+
+```sql
+SELECT properties.device_id AS device,
+       properties.page_session_id AS session,
+       event AS layer, properties.decision AS decision, count() AS observations
+FROM events
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND properties.room_code = 'ROOM'
+  AND event IN ('mm.sync.snapshot.raw', 'mm.sync.snapshot.gate')
+GROUP BY device, session, layer, decision
+ORDER BY device, session, layer, decision
+```
+
+```sql
+SELECT properties.device_id AS device,
+       properties.page_session_id AS session,
+       properties.reason AS reason, count() AS dropped_writes
+FROM events
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND properties.room_code = 'ROOM'
+  AND event = 'mm.sync.write.dropped'
+GROUP BY device, session, reason
+ORDER BY device, session, reason
+```
 
 Host finish timeline:
 
@@ -186,7 +247,8 @@ SELECT properties.seq, event, properties.phase, properties.context,
        properties.timer_id, properties.game_status, properties.sync_version,
        properties.ok, properties.ms_elapsed, properties.error_code
 FROM events
-WHERE properties.room_code = 'ROOM' AND properties.is_host = true
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND properties.room_code = 'ROOM' AND properties.is_host = true
   AND event IN ('mm.game.match', 'mm.game.finish_check', 'mm.game.state',
                 'mm.sync.write.enqueued', 'mm.sync.write.dropped',
                 'mm.sync.write.result', 'mm.nav.results_timer', 'mm.nav.route',
@@ -196,10 +258,11 @@ ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
 
 For render/cursor pressure, compare window deltas in `mm.perf.frames` against long frames and timer drift, with room/device/build fixed. Counts alone do not establish that a render caused a dropped tap. Existing autocapture predates the refactor and is unchanged here; compare PostHog SDK click timestamps with the independent input/game events without assuming it is a new regression.
 
-Remote delivery and paint samples (one row per writer/receiver/round/revision):
+Remote delivery and paint medians/p95, reported separately for each writer/receiver direction and receiving page session. Join keys include room via the identical room filter in every subquery, round and revision; writer and receiver must differ. To inspect individual revision samples, replace the final aggregate with `SELECT * FROM delivery ORDER BY writer, receiver, round, version`.
 
 ```sql
-SELECT w.device AS writer, r.device AS receiver, w.round, w.version,
+WITH delivery AS (
+SELECT w.device AS writer, r.device AS receiver, r.session AS receiver_session, w.round, w.version,
        r.accepted_at - w.committed_at AS estimated_commit_to_accept_ms,
        p.painted_mono - r.accepted_mono AS accept_to_paint_ms,
        p.apply_to_paint_ms
@@ -208,7 +271,8 @@ FROM (
            properties.sync_version AS version,
            min(toFloat(properties.t_server)) AS committed_at
     FROM events
-    WHERE event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
       AND properties.ok = true AND properties.clock_reference = 'rtdb'
       AND properties.t_server IS NOT NULL
     GROUP BY device, round, version
@@ -219,7 +283,8 @@ JOIN (
            min(toFloat(properties.t_server)) AS accepted_at,
            min(toFloat(properties.t_mono)) AS accepted_mono
     FROM events
-    WHERE event = 'mm.sync.snapshot.gate' AND properties.room_code = 'ROOM'
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND event = 'mm.sync.snapshot.gate' AND properties.room_code = 'ROOM'
       AND properties.decision = 'accepted' AND properties.clock_reference = 'rtdb'
       AND properties.t_server IS NOT NULL
     GROUP BY device, session, round, version
@@ -230,13 +295,23 @@ JOIN (
            min(toFloat(properties.t_mono)) AS painted_mono,
            argMin(toFloat(properties.ms_apply_to_paint), toFloat(properties.t_mono)) AS apply_to_paint_ms
     FROM events
-    WHERE event = 'mm.render.painted' AND properties.room_code = 'ROOM'
+    WHERE timestamp > now() - INTERVAL 7 DAY
+      AND event = 'mm.render.painted' AND properties.room_code = 'ROOM'
       AND properties.phase = 'after-frame-task'
       AND properties.ms_apply_to_paint IS NOT NULL
     GROUP BY device, session, round, version
 ) AS p ON r.device = p.device AND r.session = p.session
           AND r.round = p.round AND r.version = p.version
 WHERE w.device != r.device AND p.painted_mono >= r.accepted_mono
+)
+SELECT writer, receiver, receiver_session,
+       count() AS samples,
+       quantile(0.5)(estimated_commit_to_accept_ms) AS median_commit_to_accept_ms,
+       quantile(0.95)(estimated_commit_to_accept_ms) AS p95_commit_to_accept_ms,
+       quantile(0.5)(accept_to_paint_ms) AS median_accept_to_paint_ms,
+       quantile(0.95)(accept_to_paint_ms) AS p95_accept_to_paint_ms
+FROM delivery
+GROUP BY writer, receiver, receiver_session
 ```
 
 This query uses the earliest accepted/painted occurrence of a revision per receiving page session. For repeated resynchronizations, use the detailed `apply_id` records instead. `committed_at` is the writer's transaction-promise completion observation; a peer may receive the commit before that promise resolves. Negative commit-to-accept estimates therefore need not be clock error. These samples do not measure Firestore server processing time, and sample absence can mean filtering or a cancelled paint rather than missing delivery. Use the raw snapshot and cancellation events to audit excluded revisions.
