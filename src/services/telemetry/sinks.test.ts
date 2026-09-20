@@ -37,6 +37,7 @@ function event(i = 0, text = ""): PreparedEvent {
 			environment: "preview",
 			commit: "abc",
 			$process_person_profile: false,
+			$geoip_disable: true,
 			path: text,
 		},
 	});
@@ -78,6 +79,12 @@ describe("diagnostic sinks", () => {
 			expect(payload.batch.length).toBeLessThanOrEqual(50);
 			count += payload.batch.length;
 			expect(payload.batch[0].properties.$process_person_profile).toBe(false);
+			expect(
+				payload.batch.every(
+					(event: { properties: { $geoip_disable: boolean } }) =>
+						event.properties.$geoip_disable === true,
+				),
+			).toBe(true);
 			expect(payload.batch[0].distinct_id).toBe("device");
 		}
 		expect(count).toBe(120);

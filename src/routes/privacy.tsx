@@ -114,6 +114,14 @@ export function PrivacyPage() {
 							</li>
 						</ul>
 						<p className="text-gray-600 mt-2">
+							PostHog receives your IP address. General usage analytics may
+							derive an approximate location from it, including city, postal
+							code and estimated coordinates. We disable this location
+							enrichment for diagnostic events; their request IP address may
+							still be retained. We do not request access to your device’s
+							location sensors.
+						</p>
+						<p className="text-gray-600 mt-2">
 							Diagnostic events do not include player names. Analytics run in
 							preview and production, and are relayed through the app’s own
 							domain to PostHog’s US service. Local emulator development stores
@@ -130,7 +138,7 @@ export function PrivacyPage() {
 						<ul className="list-disc list-inside text-gray-600 space-y-1">
 							<li>Email addresses or contact information</li>
 							<li>Payment information (the game is free)</li>
-							<li>Location data</li>
+							<li>GPS or device location sensor data</li>
 							<li>Social media profiles</li>
 							<li>Account profiles or a device fingerprint</li>
 						</ul>
