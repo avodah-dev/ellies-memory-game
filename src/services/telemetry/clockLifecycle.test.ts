@@ -95,3 +95,37 @@ it("does not overlap periodic runs or publish after cleanup", async () => {
 	expect(getOffsets().sample_id).toBeNull();
 	expect(mocks.track).not.toHaveBeenCalled();
 });
+
+it.each(["visibilitychange", "online", "pageshow"])(
+	"does not restart %s calibration on the first watchdog tick after suspension",
+	async (event) => {
+		let mono = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => mono);
+		vi.spyOn(Date, "now").mockImplementation(() => mono + 14500);
+		stop = startClockCalibration();
+		await vi.advanceTimersByTimeAsync(1);
+		let resolve!: (r: Response) => void;
+		vi.mocked(fetch).mockImplementation(
+			() =>
+				new Promise((r) => {
+					resolve = r;
+				}),
+		);
+		// Simulate a suspended event loop: time advances without interval callbacks.
+		mono = 10000;
+		(event === "visibilitychange" ? document : window).dispatchEvent(
+			new Event(event),
+		);
+		expect(fetch).toHaveBeenCalledTimes(6);
+		mono = 11000;
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(fetch).toHaveBeenCalledTimes(6);
+		expect(mocks.track).not.toHaveBeenCalledWith("mm.clock.calibration", {
+			reason: "scheduler-gap",
+			status: "invalidated",
+		});
+		stop();
+		resolve(new Response('{"now":100000}'));
+		await vi.advanceTimersByTimeAsync(1);
+	},
+);
