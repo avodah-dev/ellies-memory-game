@@ -150,3 +150,15 @@ describe("diagnostic sinks", () => {
 		expect(s.stats()).toEqual({ dropped: 1, failures: 1 });
 	});
 });
+
+it("calls fetch with the browser global receiver rather than the sink instance", async () => {
+	const receiverSensitiveFetch = vi.fn(function (this: unknown) {
+		if (this !== globalThis) throw new TypeError("Illegal invocation");
+		return Promise.resolve(new Response('{"status":"Ok"}'));
+	});
+	const s = sink(receiverSensitiveFetch);
+	s.write([event()]);
+	await vi.advanceTimersByTimeAsync(0);
+	expect(receiverSensitiveFetch).toHaveBeenCalledTimes(1);
+	expect(s.stats()).toEqual({ dropped: 0, failures: 0 });
+});
