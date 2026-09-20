@@ -32,12 +32,13 @@ const test = base.extend<{ applicationErrors: string[] }>({
 	],
 });
 async function home(page: Page) {
-	await page.addLocatorHandler(
-		page.getByRole("button", { name: "Got it!", exact: true }),
-		async (button) => {
-			await button.click();
-		},
-	);
+	// Gameplay tests use a returning player. The delayed iPad install prompt
+	// can otherwise appear between pointer-down/up and swallow the first click.
+	await page.addInitScript((appOrigin) => {
+		// Init scripts also run in Firebase's sandboxed polling iframe.
+		if (window.top !== window || location.origin !== appOrigin) return;
+		localStorage.setItem("pwaInstallDismissed", "true");
+	}, new URL(test.info().project.use.baseURL!).origin);
 	await page.addLocatorHandler(
 		page.getByRole("button", { name: /continue anyway/i }),
 		async (button) => {

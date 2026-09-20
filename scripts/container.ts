@@ -41,7 +41,9 @@ try {
 		encoding: "utf8",
 	}).trim();
 	await run("docker", [
+		"buildx",
 		"build",
+		"--load",
 		"--platform",
 		"linux/amd64",
 		"--build-arg",

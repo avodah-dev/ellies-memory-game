@@ -5,13 +5,14 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: fly-${{ github.ref_name }}
   cancel-in-progress: false
 jobs:
   release:
     if: github.ref_name == 'main' || github.ref_name == 'staging'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     environment: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
     env:
@@ -19,24 +20,40 @@ jobs:
       FLY_CONFIG: ${{ github.ref_name == 'main' && 'fly.toml' || 'fly.preview.toml' }}
       APP_ENV: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
     steps:
+      - name: Set artifact directory
+        run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/verified-image" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version-file: .node-version
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+          persist-credentials: false
+      - name: Find an image verified for this exact tree
+        id: verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/artifacts.mjs restore
+      - if: steps.verified.outputs.found != 'true'
+        uses: ./.github/actions/verification-setup
         with:
-          bun-version: 1.3.9
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+          full: 'true'
+      - name: Full release gate when no verified image exists
+        if: steps.verified.outputs.found != 'true'
+        run: |
+          node --test scripts/ci/*.test.mjs
+          bun run verify:release
+          node scripts/ci/artifacts.mjs save
+      - name: Retain newly verified image
+        if: steps.verified.outputs.found != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          distribution: temurin
-          java-version: "21"
-      - run: bun install --frozen-lockfile
-      - run: bunx playwright install --with-deps chromium webkit
-      - run: bun run verify:release
+          name: verified-image-${{ steps.verified.outputs.tree }}
+          path: ${{ env.VERIFIED_IMAGE_DIR }}/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
         with:
           version: 0.4.99
-      - name: Publish the exact image tested against emulators
+      - name: Publish the exact tested image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
@@ -47,23 +64,25 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --config "$FLY_CONFIG" --image "registry.fly.io/$FLY_APP:$GITHUB_SHA" --ha=false --strategy rolling --wait-timeout 180
-      - name: Verify the deployed revision
+      - name: Verify deployed image revision and HTTP smoke
+        run: node scripts/ci/smoke.mjs
+      - name: Record promotion evidence
+        env:
+          SOURCE_RUN: ${{ steps.verified.outputs.source_run }}
         run: |
           node --input-type=module <<'JS'
-          const url=`https://${process.env.FLY_APP}.fly.dev/healthz`;
-          const response=await fetch(url,{signal:AbortSignal.timeout(30000)});
-          if(!response.ok)throw new Error(`Health check returned ${response.status}`);
-          const result=await response.json();
-          if(result.commit!==process.env.GITHUB_SHA || result.environment!==process.env.APP_ENV)throw new Error('Deployed revision or environment does not match');
-          console.log(`Verified ${result.commit} on ${process.env.FLY_APP}`);
+          import {readFileSync,appendFileSync} from 'node:fs';
+          const m=JSON.parse(readFileSync(`${process.env.VERIFIED_IMAGE_DIR}/manifest.json`,'utf8'));
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Verified image promotion\n\nDeploy commit: ${process.env.GITHUB_SHA}\n\nTree: ${m.tree}\n\nImage build commit (/healthz): ${m.commit}\n\nImage ID: ${m.imageId}\n\nSource verification run: ${process.env.SOURCE_RUN || process.env.GITHUB_RUN_ID}\n`);
           JS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: release-reports-${{ github.ref_name }}
           path: |
+            ${{ env.VERIFIED_IMAGE_DIR }}/manifest.json
             coverage/
             playwright-report/
             test-results/
             *-debug.log
-          retention-days: 7
+          retention-days: 14

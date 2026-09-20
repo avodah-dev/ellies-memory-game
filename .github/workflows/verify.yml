@@ -9,23 +9,46 @@ concurrency:
   cancel-in-progress: true
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
+      - name: Set artifact directory
+        run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/verified-image" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version-file: .node-version
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+          # Verify the publishable revision; branch protection requires it up to date.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify changes
+        id: source
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/ci/artifacts.mjs metadata
+      - uses: ./.github/actions/verification-setup
         with:
-          bun-version: 1.3.9
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+          full: ${{ steps.source.outputs.docs_only != 'true' }}
+      - name: Verify artifact promotion policy
+        run: node --test scripts/ci/*.test.mjs
+      - name: Full release gate
+        if: steps.source.outputs.docs_only != 'true'
+        run: bun run verify:release
+      - name: Docs-only checks (no deployable image)
+        if: steps.source.outputs.docs_only == 'true'
+        run: bun run check
+      - name: Export the tested image
+        if: steps.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: node scripts/ci/artifacts.mjs save
+      - name: Retain verified image for promotion
+        if: steps.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          distribution: temurin
-          java-version: "21"
-      - run: bun install --frozen-lockfile
-      - run: bunx playwright install --with-deps chromium webkit
-      - run: bun run verify:release
+          name: verified-image-${{ steps.source.outputs.tree }}
+          path: ${{ env.VERIFIED_IMAGE_DIR }}/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
