@@ -246,3 +246,46 @@ Delayed writes, timers and paint tasks retain the room/role context captured whe
 Reconnect invalidates the previous RTDB candidate. Calibration remains absent until a new offset observation is available; repeated connection notifications retain the observation's original age. Diagnostic adapter callbacks are isolated: a failed trace start explicitly disables that trace, and other observer exceptions cannot abort a transaction, replace its error, prevent snapshot delivery or stop cleanup. Full-state replacement and reset generation bumps carry the same synchronization-session ID as queued writes.
 
 The batch sink keeps its in-flight guard until the response body has been consumed, not merely until response headers arrive. This prevents adjacent diagnostic keepalive batches from overlapping that transport budget; the browser's keepalive quota is also shared with other traffic. Existing backoff and UUID retention are unchanged. Health counts failed attempts cumulatively even when a later send succeeds; audit successful batches/PostHog sequence IDs before concluding that an event was lost.
+
+## Connection Test (PR 4)
+
+Open **Settings → Advanced → Connection test**, then choose Start test. The eight steps run sequentially in the lobby or during a game. The game continues behind the modal. Close, Escape or Cancel test aborts the active scope and starts no later tests. Results appear as each step finishes; Copy results includes the complete report and device identity. A completed test is an observation, not a pass/fail verdict on playable latency. Tap tests are optional and require explicit Continue after each attempt, so the test does not disable the cards before a second click can arrive.
+
+| Test | Measurement and limits |
+| --- | --- |
+| `http` | Ten same-origin no-store `/diag/ping` requests, three-second limit each and 35 seconds overall. `first_ping_ms` is separate from the nine warm samples (`min_ms`, `median_ms`, `p95_ms`). It is the first ping of this test, not a guarantee of a cold connection: boot calibration or prior traffic may have warmed it. `jitter_ms` is mean absolute difference between adjacent successful warm samples. Failures are counted, never substituted with zero latency. |
+| `firestore` | Five sequential `getDocFromServer(rooms/0000)` reads; four seconds per read, 22 seconds overall including auth readiness. Missing document is the expected success. Reads stop after the first failure. The SDK cannot cancel an in-flight read; it may finish read-only in the background, but no later reads are issued. No Firestore writes. |
+| `rtdb` | Temporary Firebase app with in-memory auth copied from the current anonymous user and its own RTDB connection. Registers `onDisconnect().remove()` on `cursors/0000/<uid>` before writing. Five sequential `set()` acknowledgements, three seconds each; optimistic local callbacks do not stop the RTT timer. Removes the scratch value, disconnects only the probe client and deletes that temporary app instance. Abort/timeout disconnects the probe, leaving the acknowledged server disconnect hook to clean up. The shared gameplay connection and auth are untouched. Overall deadline 26 seconds includes setup and cleanup. |
+| `transport` | Completed resource-timing entries for `/Listen/channel`, counting `CI=1` as a polling hint. One-second deadline. Historical entries and missing in-flight entries cannot establish the currently active transport; `not-observed` is explicit. |
+| `network` | Optional `navigator.connection` values: supported, effective_type, downlink_mbps, estimated_rtt_ms and save_data. Unsupported is expected on Safari. Browser estimates are not new measurements. One-second deadline. |
+| `frames` | Two seconds of rAF intervals, p95/max and histogram bins; four-second deadline. Hidden pages stop with page-hidden. This measures frame scheduling under the current workload, not display completion. |
+| `touch_a` | Ask for five taps on one card-styled button, then Continue. Record actual downs/ups/cancels/clicks, pointer types and matched down→up, down→click, up→click timings. Do not infer a click from a down. Sixty-second deadline; skip is explicit. |
+| `touch_b` | Three explicit left-then-right attempts, 30 seconds per pair and 90 seconds overall. Record each pair's counters/timings as `pair_1_*` through `pair_3_*`, plus completed_pairs and both_clicked_pairs. The last click gap describes the recorded input; the test does not assume the user actually tapped rapidly or in the instructed order. No preventDefault, pointer capture or touch-action override. |
+
+The reserved room code `0000` cannot be allocated by the letter-only room generator. Only the current user's scratch cursor is written. The RTDB cancellation design uses [Firebase's documented server acknowledgement and disconnect behavior](https://firebase.google.com/docs/reference/js/database); [updateCurrentUser](https://firebase.google.com/docs/reference/js/auth#updatecurrentuser) copies the current user into the isolated in-memory Auth instance. No Firebase/RTDB rules change is required or included. Parallel tests in separate tabs sharing a UID share the scratch path, so run one Connection Test per device at a time; the probe measures acknowledgement, not an echo of scratch contents.
+
+Connection Test reports `measured_http_offset_ms` and `measured_rtdb_offset_ms` separately from the event envelope's existing clock calibration. Both are server-minus-device corrections. The test never overwrites gameplay calibration or uses HTTP time to merge room timelines. Per-probe measurements may be newer than the envelope's offsets; after a device-clock adjustment reload before a baseline.
+
+Events use the existing bounded telemetry sinks: emulator stays local, hosted environments send diagnostic batches when telemetry is on. They retain room/role/round context from the start of the test even if the player navigates while it runs. No probe credentials, network URLs or arbitrary error messages are recorded.
+
+| Event | Fields |
+| --- | --- |
+| `mm.conntest.start` | Unique `test_id` and captured room context. |
+| `mm.conntest.result` | `test_id`, `test`, `status` (`ok`, `error`, `timeout`, `cancelled`, `skipped`) plus scalar metrics above. Status ok means the probe returned, not that the connection is fast or that every instructed tap occurred. |
+| `mm.conntest.done` | `test_id`, `cancelled`, result count and monotonic `ms_elapsed`. A cancelled run can have fewer than eight results. |
+
+```sql
+SELECT properties.device_label AS device, properties.test_id AS test_id,
+       event, properties.test, properties.status, properties.cancelled,
+       properties.samples, properties.failures, properties.median_ms,
+       properties.p95_ms, properties.measured_http_offset_ms,
+       properties.measured_rtdb_offset_ms, properties.both_clicked_pairs,
+       properties.ms_elapsed
+FROM events
+WHERE timestamp > now() - INTERVAL 7 DAY
+  AND event IN ('mm.conntest.start', 'mm.conntest.result', 'mm.conntest.done')
+  AND properties.room_code = 'ROOM'
+ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
+```
+
+Run lobby and mid-game tests on both real devices for the baseline. Synthetic browser taps verify delivery and isolation, not iPad hardware timing. Local Vite dev/preview servers expose the same JSON ping contract; the container suite exercises Fastify's actual endpoint. Unit checks cover timeout/cancellation and server-ack sequencing; the two-browser flow verifies successful lobby probes, touch recording, mid-game snapshot delivery and cancellation while zero non-loopback requests and console-error gates remain active.

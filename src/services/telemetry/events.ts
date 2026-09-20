@@ -3,6 +3,9 @@ import type { RuntimeConfig } from "../../../shared/runtimeConfig";
 import type { GameplayEvents } from "./gameplayEvents";
 
 export interface EventProps extends GameplayEvents {
+	"mm.conntest.start": Record<string, string | number | boolean | null>;
+	"mm.conntest.result": Record<string, string | number | boolean | null>;
+	"mm.conntest.done": Record<string, string | number | boolean | null>;
 	"mm.session.start": Record<string, string | number | boolean | null>;
 	"mm.app.boot": { phase: string; ms_elapsed: number };
 	"mm.app.error": {
