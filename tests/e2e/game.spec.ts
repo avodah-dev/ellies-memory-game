@@ -488,3 +488,96 @@ for (const transport of ["default", "polling"] as const) {
 		}
 	});
 }
+
+test("Connection Test completes in the lobby and does not disconnect an active game", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await browser.newContext({
+		...test.info().project.use,
+		baseURL: test.info().project.use.baseURL,
+	});
+	watchApplicationErrors(guestContext, applicationErrors);
+	await localRequestsOnly(guestContext);
+	const openTest = async (page: Page) => {
+		await page.getByRole("button", { name: "Settings", exact: true }).click();
+		await page
+			.getByRole("button", { name: "⚡ Advanced", exact: true })
+			.click();
+		await page
+			.getByRole("button", { name: "Connection test", exact: true })
+			.click();
+		await page.getByRole("button", { name: "Start test", exact: true }).click();
+	};
+	try {
+		await home(host);
+		await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await host.getByRole("button", { name: /create.*room/i }).click();
+		await expect(host).toHaveURL(/\/online\/waiting$/);
+		await host.getByRole("button", { name: /40.*cards/i }).click();
+		await host.getByRole("button", { name: "4 4×2 Easy" }).click();
+		const code = (await host.getByTestId("room-code").textContent())!.trim();
+		await openTest(host);
+		await expect(host.getByText("A: Tap the card five times")).toBeVisible();
+		const activate = async (name: string) => {
+			const button = host.getByRole("button", { name, exact: true });
+			if (test.info().project.use.hasTouch) await button.tap();
+			else await button.click();
+		};
+		for (let i = 0; i < 5; i++) await activate("Tap");
+		await activate("Continue");
+		for (let pair = 1; pair <= 3; pair++) {
+			await expect(
+				host.getByText(`B: Tap left then right fast — pair ${pair} of 3`),
+			).toBeVisible();
+			await activate("Left");
+			await activate("Right");
+			await activate("Continue pair");
+		}
+		await expect(
+			host.getByText("Test complete", { exact: true }),
+		).toBeVisible();
+		await expect
+			.poll(async () => {
+				const rows = await diagnostics(host);
+				const results = rows.filter(
+					(row) => row.message === "mm.conntest.result",
+				);
+				return (
+					results.length === 8 &&
+					results.every((row) => row.context.status === "ok") &&
+					rows.some((row) => row.message === "mm.conntest.done")
+				);
+			})
+			.toBe(true);
+		await host.getByRole("button", { name: "Close modal" }).click();
+		const guest = await guestContext.newPage();
+		await home(guest);
+		await guest.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await guest.getByRole("button", { name: /join.*room/i }).click();
+		await guest.getByPlaceholder("ABCD").fill(code);
+		await guest.getByRole("button", { name: "Join Game", exact: true }).click();
+		await expect(guest).toHaveURL(/\/online\/waiting$/);
+		await host.getByRole("button", { name: /start game/i }).click();
+		await expect(guest).toHaveURL(/\/online\/game$/);
+		await openTest(guest);
+		await expect(guest.getByText("A: Tap the card five times")).toBeVisible();
+		await card(host, 0).click();
+		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
+		await guest
+			.getByRole("button", { name: "Cancel test", exact: true })
+			.click();
+		await expect(
+			guest.getByText("Test cancelled", { exact: true }),
+		).toBeVisible();
+		await guest.getByRole("button", { name: "Close modal" }).click();
+		await card(host, 1).click();
+		await expect(card(guest, 0)).toHaveCount(0);
+		await expect(
+			guest.getByText("Connection interrupted. Game paused.", { exact: true }),
+		).toHaveCount(0);
+	} finally {
+		await guestContext.close();
+	}
+});

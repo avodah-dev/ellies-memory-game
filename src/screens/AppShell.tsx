@@ -1,3 +1,4 @@
+import { ConnectionTestModal } from "../components/ConnectionTestModal";
 import { track } from "../services/telemetry/core";
 import { useOnlineStore } from "../stores/onlineStore";
 import { Outlet } from "@tanstack/react-router";
@@ -347,6 +348,7 @@ export function AppShell({ model }: { model: AppModel }) {
 						onClose={() => setShowLogViewer(false)}
 						roomCode={roomCode ?? undefined}
 					/>
+					<ConnectionTestModal />
 					{/* Build Info Modal */}
 					<BuildInfoModal
 						isOpen={showBuildInfo}
