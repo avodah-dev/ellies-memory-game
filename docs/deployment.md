@@ -55,3 +55,13 @@ The existing public hostname is `play.matchimus.app`. Nathan will make the DNS c
 ## Rollback
 
 Record the previous image reference before release. After authorization, redeploy that known-good image with the appropriate Fly config. A frontend rollback does not roll back Firebase rules: assess them separately, and do not reinstate an older client against incompatible rules. Keep old deployment evidence until the new domain and online flow are verified.
+
+## Installed apps and Reload App
+
+A PWA installed from `play.matchimus.app` keeps the same origin when hosting moves between providers. A hosting move alone does not require reinstalling it. An installation from a different hostname must be replaced with one installed from the public hostname.
+
+Reload App asks for confirmation, unregisters same-origin service workers, deletes same-origin Cache Storage, then replaces the current page with a unique home-page URL. Each cleanup phase has a three-second limit; unavailable or blocked browser APIs produce a warning and do not prevent navigation. Cookies, localStorage and IndexedDB are retained, preserving preferences and Firebase identity. The current game is not resumed.
+
+The Fastify response to that explicit reload sends `Clear-Site-Data: "cache"` to request HTTP-cache removal in supporting browsers. App HTML is always `Cache-Control: no-store`; fingerprinted assets remain immutable. The one-time reload query is removed before application startup. This is the strongest supported in-app cleanup, not a guarantee that every browser cache is flushed: JavaScript cannot flush OS/DNS caches, update another device, or replace code in an old installation that has not yet downloaded this reload implementation. Other open tabs can still run their existing code. Close and reopen affected tabs if needed, and use a fresh room after an incompatible protocol release.
+
+Local browser tests install a real controlling legacy service worker that returns stale app HTML, then exercise the actual Reload App button and check that navigation reaches the network and saved storage survives. The worker fixture is copied into the local preview build or mounted read-only into the test container; it is not included in the released image.

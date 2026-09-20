@@ -1,5 +1,6 @@
 import { spawn, execFileSync } from "node:child_process";
 import ports from "../local-ports.json";
+import { fileURLToPath } from "node:url";
 const image = "matchimus-verify:local";
 const name = `matchimus-verify-${process.pid}`;
 function run(command: string, args: string[], env = process.env) {
@@ -60,6 +61,8 @@ try {
 		"APP_ENV=emulator",
 		"--env",
 		`PORT=${ports.server}`,
+		"--mount",
+		`type=bind,source=${fileURLToPath(new URL("../tests/fixtures/reload-worker.js", import.meta.url))},target=/app/dist/__reload-test-worker.js,readonly`,
 		image,
 	]);
 	started = true;

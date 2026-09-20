@@ -22,7 +22,10 @@ import { ReloadConfirmationModal } from "../components/ReloadConfirmationModal";
 import { ResetConfirmationModal } from "../components/ResetConfirmationModal";
 import { SettingsMenu } from "../components/SettingsMenu";
 import type { AppModel } from "../hooks/useAppModel";
+import { useState } from "react";
+import { reloadApp } from "../utils/reloadApp";
 export function AppShell({ model }: { model: AppModel }) {
+	const [isReloading, setIsReloading] = useState(false);
 	const onlineError = useOnlineStore((s) => s.error);
 	const {
 		backgroundLayerClass,
@@ -253,12 +256,19 @@ export function AppShell({ model }: { model: AppModel }) {
 					{/* Reload App Confirmation Modal */}
 					<Modal
 						isOpen={showReloadConfirmation}
-						onClose={() => setShowReloadConfirmation(false)}
+						onClose={() => {
+							if (!isReloading) setShowReloadConfirmation(false);
+						}}
 						title="Reload App"
 					>
 						<ReloadConfirmationModal
 							onCancel={() => setShowReloadConfirmation(false)}
-							onConfirm={() => window.location.reload()}
+							isReloading={isReloading}
+							onConfirm={() => {
+								if (isReloading) return;
+								setIsReloading(true);
+								void reloadApp();
+							}}
 						/>
 					</Modal>
 

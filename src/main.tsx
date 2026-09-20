@@ -3,8 +3,10 @@ import "./index.css";
 import { RouterProvider } from "@tanstack/react-router";
 import { initializeRuntimeConfig } from "./lib/runtimeConfig";
 import ports from "../local-ports.json";
+import { consumeReloadMarker } from "./utils/reloadApp";
 
 async function main() {
+	consumeReloadMarker();
 	const rootElement = document.getElementById("root");
 	if (!rootElement) throw new Error("Root element not found");
 	const config = await initializeRuntimeConfig();
