@@ -33,6 +33,16 @@ const local = {
 	firebase: null,
 } as const;
 describe("telemetry core", () => {
+	it("disables diagnostic geolocation even when event props request it", () => {
+		const sink = new MemorySink();
+		startTelemetry(local, [sink]);
+		track("mm.session.start", { $geoip_disable: false });
+		flushNow();
+		expect(sink.events).toHaveLength(2);
+		for (const event of sink.events) {
+			expect(event.properties.$geoip_disable).toBe(true);
+		}
+	});
 	it("is inert before start, bounds the ring, and preserves monotonic sequence numbers", () => {
 		for (let i = 0; i < 3100; i++) track("mm.nav.route", { path: String(i) });
 		flushNow();

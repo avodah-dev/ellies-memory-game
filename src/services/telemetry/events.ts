@@ -53,6 +53,7 @@ export interface TelemetryEvent {
 		environment: RuntimeConfig["environment"];
 		commit: string;
 		$process_person_profile: false;
+		$geoip_disable: true;
 	};
 }
 
