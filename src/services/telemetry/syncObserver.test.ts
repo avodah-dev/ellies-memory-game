@@ -117,3 +117,34 @@ it("records each raw snapshot decision without serializing the document", () => 
 		);
 	}
 });
+it("isolates every adapter observer hook, including a failed trace start", async () => {
+	const { isolateSyncObserver } = await import("./syncObserver");
+	const fail = vi.fn(() => {
+		throw new Error("observer failure");
+	});
+	const observer = isolateSyncObserver({
+		...noopSyncObserver,
+		txStart: fail,
+		txPhase: fail,
+		txEnd: fail,
+		snapshotRaw: fail,
+		listener: fail,
+	});
+	const state = createTestOnlineGameState();
+	const trace = observer.txStart(state, "TEST");
+	expect(trace).toBeNull();
+	expect(() => observer.txPhase(trace, "attempt")).not.toThrow();
+	expect(() => observer.txEnd(trace)).not.toThrow();
+	const live = noopSyncObserver.txStart(state, "TEST");
+	expect(() => observer.txPhase(live, "get-game")).not.toThrow();
+	expect(() => observer.txEnd(live, new Error("original"))).not.toThrow();
+	expect(() =>
+		observer.snapshotRaw("TEST", {
+			exists: () => false,
+			get: () => undefined,
+			metadata: { hasPendingWrites: false, fromCache: false },
+		}),
+	).not.toThrow();
+	expect(() => observer.listener("TEST", "unsubscribe", "one")).not.toThrow();
+	expect(fail).toHaveBeenCalledTimes(5);
+});

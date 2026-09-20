@@ -7,6 +7,7 @@ export function observeRtdbClock(database: Database) {
 	let connected = false;
 	let stopped = false;
 	let candidate: number | null = null;
+	let observedAt = 0;
 	let unsubscribe = () => {};
 	const publish = () => {
 		if (stopped) return;
@@ -14,7 +15,7 @@ export function observeRtdbClock(database: Database) {
 			setRtdbOffset(null);
 			return;
 		}
-		setRtdbOffset(candidate);
+		setRtdbOffset(candidate, observedAt);
 		track("mm.clock.offset", {
 			source: "rtdb",
 			offset_ms: candidate,
@@ -26,6 +27,7 @@ export function observeRtdbClock(database: Database) {
 		unsubscribe = onValue(
 			ref(database, ".info/serverTimeOffset"),
 			(snapshot) => {
+				observedAt = performance.now();
 				const value: unknown = snapshot.val();
 				candidate =
 					typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -42,6 +44,7 @@ export function observeRtdbClock(database: Database) {
 	return {
 		connectionChanged(value: boolean) {
 			connected = value;
+			if (!value) candidate = null;
 			publish();
 		},
 		stop() {

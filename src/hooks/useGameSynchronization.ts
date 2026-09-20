@@ -282,6 +282,7 @@ export function useGameSynchronization({
 		trace,
 	]);
 	return {
+		telemetryTrace: trace,
 		syncError,
 		resynchronize,
 		syncToFirestore,

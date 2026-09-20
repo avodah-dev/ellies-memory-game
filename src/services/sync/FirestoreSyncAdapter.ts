@@ -1,5 +1,6 @@
 import {
 	instrumentAdapter,
+	isolateSyncObserver,
 	telemetrySyncObserver,
 	type SyncObserver,
 } from "../telemetry/syncObserver";
@@ -40,14 +41,14 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	private presenceService: PresenceService | null = null;
 	private subscriptions = new Set<() => void>();
 	private services: FirebaseServices;
-	private observer: SyncObserver;
+	private observer: ReturnType<typeof isolateSyncObserver>;
 	constructor(
 		client: FirebaseServices = services,
 		observer: SyncObserver = telemetrySyncObserver,
 	) {
 		super();
 		this.services = client;
-		this.observer = observer;
+		this.observer = isolateSyncObserver(observer);
 	}
 	async connect() {
 		if (this.connected) return;

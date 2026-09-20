@@ -13,12 +13,15 @@ const empty: ClockOffsets = Object.freeze({
 	rtdb_sample_mono_ms: null,
 });
 let offsets = empty;
-export function setRtdbOffset(value: number | null) {
+export function setRtdbOffset(
+	value: number | null,
+	observedAt = performance.now(),
+) {
 	const valid = typeof value === "number" && Number.isFinite(value);
 	offsets = Object.freeze({
 		...offsets,
 		offset_rtdb_ms: valid ? value : null,
-		rtdb_sample_mono_ms: valid ? performance.now() : null,
+		rtdb_sample_mono_ms: valid ? observedAt : null,
 	});
 }
 // One immutable reference per calibration; enqueue does not allocate clock metadata.
