@@ -4,6 +4,20 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 import ports from "./local-ports.json";
 import { emulatorCsp } from "./shared/emulatorCsp";
+import type { PreviewServer, ViteDevServer } from "vite";
+
+function localPing(server: PreviewServer | ViteDevServer) {
+	server.middlewares.use("/diag/ping", (request, response) => {
+		response.setHeader("Cache-Control", "no-store");
+		response.setHeader("Content-Type", "application/json");
+		if (request.method !== "GET") {
+			response.statusCode = 405;
+			response.end();
+			return;
+		}
+		response.end(JSON.stringify({ now: Date.now() }));
+	});
+}
 
 export default defineConfig(({ mode }) => ({
 	plugins: [
@@ -11,6 +25,8 @@ export default defineConfig(({ mode }) => ({
 		react(),
 		{
 			name: "local-network-isolation",
+			configureServer: localPing,
+			configurePreviewServer: localPing,
 			transformIndexHtml() {
 				return mode === "production"
 					? []

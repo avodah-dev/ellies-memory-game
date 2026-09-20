@@ -1,3 +1,4 @@
+import { useUIStore } from "../stores/uiStore";
 import { useState } from "react";
 import { DeviceIdentity } from "./DeviceIdentity";
 
@@ -102,6 +103,7 @@ export const SettingsMenu = ({
   onReloadApp,
   onViewBuildInfo,
 }: SettingsMenuProps) => {
+  const setShowConnectionTest = useUIStore(s => s.setShowConnectionTest);
   // State for collapsible sections
   const [displayCardsOpen, setDisplayCardsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -398,6 +400,7 @@ export const SettingsMenu = ({
         >
           <div className="space-y-4">
             <DeviceIdentity />
+            <button type="button" onClick={() => { onClose(); setShowConnectionTest(true); }} className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium">Connection test</button>
             {/* End Turn Button - only during gameplay */}
             {onEndTurn && gameStatus === "playing" && (
               <div>

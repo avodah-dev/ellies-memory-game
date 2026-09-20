@@ -21,6 +21,7 @@ export interface LayoutMetrics {
 interface UIStoreState {
 	// Modal states
 	showStartModal: boolean;
+	showConnectionTest: boolean;
 
 	// Animation state
 	isAnimatingCards: boolean;
@@ -33,6 +34,7 @@ interface UIStoreState {
 interface UIStoreActions {
 	// Modal actions
 	setShowStartModal: (show: boolean) => void;
+	setShowConnectionTest: (show: boolean) => void;
 
 	// Animation actions
 	setIsAnimatingCards: (animating: boolean) => void;
@@ -53,6 +55,7 @@ type UIStore = UIStoreState & UIStoreActions;
 
 const initialState: UIStoreState = {
 	showStartModal: false,
+	showConnectionTest: false,
 	isAnimatingCards: false,
 	allCardsFlipped: false,
 	layoutMetrics: {
@@ -71,6 +74,7 @@ export const useUIStore = create<UIStore>()(
 		...initialState,
 
 		// Modal actions
+		setShowConnectionTest: (show) => set({ showConnectionTest: show }),
 		setShowStartModal: (show: boolean) => {
 			set({ showStartModal: show });
 		},
