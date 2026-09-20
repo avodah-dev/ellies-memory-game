@@ -9,6 +9,7 @@ kill_timeout = 10
 [env]
   PORT = "5457"
   APP_ENV = "production"
+  APP_TELEMETRY = "on"
 
 [http_service]
   internal_port = 5457

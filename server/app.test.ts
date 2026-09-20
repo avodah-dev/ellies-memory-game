@@ -21,7 +21,7 @@ describe("Fly server contract", () => {
 	it("serves direct game URLs and keeps missing assets as 404", async () => {
 		const server = await createServer({
 			root,
-			config: { environment: "emulator", firebase: null },
+			config: { environment: "emulator", firebase: null, telemetry: "on" },
 			commit: "test-sha",
 		});
 		try {
@@ -53,6 +53,7 @@ describe("Fly server contract", () => {
 			expect(config.json()).toEqual({
 				environment: "emulator",
 				firebase: null,
+				telemetry: "on",
 			});
 		} finally {
 			await server.close();
@@ -61,6 +62,7 @@ describe("Fly server contract", () => {
 	it("serves only whitelisted public configuration", async () => {
 		const config = configFromEnvironment({
 			APP_ENV: "preview",
+			APP_TELEMETRY: "on",
 			FIREBASE_CONFIG_JSON: JSON.stringify({
 				projectId: "test-project",
 				apiKey: "public-web-key",
@@ -83,10 +85,15 @@ describe("Fly server contract", () => {
 		for (const env of [
 			{},
 			{ APP_ENV: "typo" },
-			{ APP_ENV: "production" },
-			{ APP_ENV: "production", FIREBASE_CONFIG_JSON: "{}" },
+			{ APP_ENV: "production", APP_TELEMETRY: "on" },
 			{
 				APP_ENV: "production",
+				APP_TELEMETRY: "on",
+				FIREBASE_CONFIG_JSON: "{}",
+			},
+			{
+				APP_ENV: "production",
+				APP_TELEMETRY: "on",
 				FIREBASE_CONFIG_JSON: JSON.stringify({
 					projectId: "demo-test",
 					apiKey: "demo",
@@ -98,13 +105,14 @@ describe("Fly server contract", () => {
 		expect(() =>
 			parseRuntimeConfig({
 				environment: "production",
+				telemetry: "on",
 				firebase: { projectId: 12 },
 			}),
 		).toThrow();
 		await expect(
 			createServer({
 				root: join(root, "missing"),
-				config: { environment: "emulator", firebase: null },
+				config: { environment: "emulator", firebase: null, telemetry: "on" },
 				commit: "abc",
 			}),
 		).rejects.toThrow();

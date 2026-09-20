@@ -8,17 +8,23 @@ export interface FirebaseWebConfig {
 	messagingSenderId?: string;
 	measurementId?: string;
 }
-export type RuntimeConfig =
+export type RuntimeConfig = { telemetry: "on" | "off" } & (
 	| { environment: "emulator"; firebase: null }
-	| { environment: "preview" | "production"; firebase: FirebaseWebConfig };
+	| { environment: "preview" | "production"; firebase: FirebaseWebConfig }
+);
 
 export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 	if (!value || typeof value !== "object" || !("environment" in value))
 		throw new Error("Application environment is required");
 	if (value.environment === "emulator")
-		return { environment: "emulator", firebase: null };
+		return { environment: "emulator", firebase: null, telemetry: "on" };
 	if (value.environment !== "preview" && value.environment !== "production")
 		throw new Error("Invalid application environment");
+	if (
+		!("telemetry" in value) ||
+		(value.telemetry !== "on" && value.telemetry !== "off")
+	)
+		throw new Error("Hosted telemetry must be explicitly on or off");
 	if (
 		!("firebase" in value) ||
 		!value.firebase ||
@@ -55,6 +61,7 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 		);
 	return {
 		environment: value.environment,
+		telemetry: value.telemetry,
 		firebase: config as unknown as FirebaseWebConfig,
 	};
 }

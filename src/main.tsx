@@ -25,7 +25,7 @@ async function main() {
 			return;
 		}
 	}
-	if (config.environment === "production") {
+	if (config.environment === "production" && config.telemetry === "on") {
 		const { default: posthog } = await import("posthog-js");
 		posthog.init("phc_LMb2gHTzOA8grLHOZJFsGvfiX2Adcb41Nqbux1EW0yH", {
 			api_host: "https://us.i.posthog.com",

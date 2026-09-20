@@ -1,6 +1,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import ports from "../local-ports.json";
 import { fileURLToPath } from "node:url";
+import { parseRuntimeConfig } from "../shared/runtimeConfig";
 const image = "matchimus-verify:local";
 const name = `matchimus-verify-${process.pid}`;
 function run(command: string, args: string[], env = process.env) {
@@ -100,6 +101,36 @@ try {
 	}
 	if ((await fetch(`${base}/assets/missing.js`)).status !== 404)
 		throw new Error("Missing assets must return 404");
+	const config = parseRuntimeConfig(
+		await (await fetch(`${base}/app-config.json`)).json(),
+	);
+	if (config.environment !== "emulator" || config.telemetry !== "on")
+		throw new Error("Container must use explicit local-only diagnostics");
+	const ping = await fetch(`${base}/diag/ping`);
+	const pingBody = await ping.json();
+	if (
+		!ping.ok ||
+		ping.headers.get("cache-control") !== "no-store" ||
+		!pingBody ||
+		typeof pingBody !== "object" ||
+		!("now" in pingBody) ||
+		typeof pingBody.now !== "number"
+	)
+		throw new Error("Diagnostic ping contract failed");
+	for (const path of ["/ingest/batch/", "/ingest/static/array.js"]) {
+		if (
+			(
+				await fetch(base + path, {
+					method: "POST",
+					body: "{}",
+					headers: { "content-type": "application/json" },
+				})
+			).status !== 404
+		)
+			throw new Error(
+				"Emulator container must not expose ingestion proxy routes",
+			);
+	}
 	await run("bun", ["run", "test:e2e"], {
 		...process.env,
 		E2E_SERVER: "container",

@@ -30,6 +30,7 @@
 		"verify:local": "bun scripts/local.ts verify",
 		"start": "bun server/index.ts",
 		"test:server": "vitest run --config vitest.server.config.ts",
+		"test:ingest-runtime": "bun scripts/test-ingest-runtime.ts",
 		"test:container": "bun scripts/container.ts",
 		"verify:release": "bun scripts/local.ts release"
 	},
