@@ -149,6 +149,10 @@ export class PostHogBatchSink implements TelemetrySink {
 					redirect: "error",
 					signal: AbortSignal.timeout(10000),
 				});
+				// Headers alone do not complete a keepalive request. Consume the
+				// response before releasing busy so adjacent batches cannot overlap
+				// the browser's shared 64 KiB in-flight keepalive budget.
+				await response.arrayBuffer();
 				if (!response.ok) throw new Error("Ingestion unavailable");
 				this.backoff = 2000;
 				this.retryAt = 0;

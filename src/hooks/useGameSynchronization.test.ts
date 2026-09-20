@@ -1,11 +1,22 @@
+import { snapshotGate, writeDropped } from "../services/telemetry/gameplay";
 import { act, renderHook } from "@testing-library/react";
 import { useRef, useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useGameSynchronization } from "./useGameSynchronization";
 import { createCardSet, createTestOnlineGameState } from "../test/testUtils";
 import type { GameState, OnlineGameState } from "../types";
 import type { ISyncAdapter } from "../services/sync/ISyncAdapter";
 
+vi.mock("../services/telemetry/gameplay", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../services/telemetry/gameplay")>();
+	return {
+		...actual,
+		snapshotGate: vi.fn(actual.snapshotGate),
+		writeDropped: vi.fn(actual.writeDropped),
+	};
+});
+beforeEach(() => vi.clearAllMocks());
 function deferred<T>() {
 	let resolve!: (value: T) => void;
 	let reject!: (error: unknown) => void;
@@ -229,4 +240,39 @@ it("resumes from a confirmed snapshot that arrives during an in-flight resynchro
 	});
 	expect(h.result.current.state).toEqual(confirmed);
 	expect(h.result.current.pausedRef.current).toBe(false);
+});
+
+it("records accepted versus ignored snapshots and queued epoch drops", async () => {
+	const h = setup();
+	h.deliver({ ...h.initial, gameRound: 1 });
+	expect(snapshotGate).toHaveBeenLastCalledWith(
+		expect.anything(),
+		"stale-round",
+		2,
+		4,
+	);
+	h.deliver({ ...h.initial, syncVersion: 5, lastUpdatedBy: 2 });
+	expect(snapshotGate).toHaveBeenLastCalledWith(
+		expect.anything(),
+		"accepted",
+		2,
+		4,
+	);
+	const first = deferred<void>();
+	h.adapter.setState.mockReturnValueOnce(first.promise);
+	await act(async () => {
+		h.result.current.syncToFirestore(h.initial, "first");
+		h.result.current.syncToFirestore(h.initial, "second");
+	});
+	h.rerender({ room: "TEST", ready: false, player: 1, online: true });
+	await act(async () => first.resolve());
+	expect(writeDropped).toHaveBeenCalledWith(
+		expect.anything(),
+		expect.objectContaining({
+			fields: expect.objectContaining({ context: "second" }),
+		}),
+		expect.any(Number),
+		true,
+	);
+	h.unmount();
 });

@@ -1,3 +1,4 @@
+import { instrumentAdapter } from "../telemetry/syncObserver";
 /**
  * LocalSyncAdapter - Sync adapter for local (same-device) gameplay
  *
@@ -55,7 +56,7 @@ let localAdapterInstance: LocalSyncAdapter | null = null;
 
 export function getLocalSyncAdapter(): LocalSyncAdapter {
 	if (!localAdapterInstance) {
-		localAdapterInstance = new LocalSyncAdapter();
+		localAdapterInstance = instrumentAdapter(new LocalSyncAdapter());
 	}
 	return localAdapterInstance;
 }

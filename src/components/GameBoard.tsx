@@ -1,3 +1,5 @@
+import { counters } from "../services/telemetry/core";
+import { usePaintProbe } from "../services/telemetry/usePaintProbe";
 import { debugLog } from "../utils/debugLog";
 import {
 	useCallback,
@@ -84,6 +86,8 @@ export const GameBoard = ({
 	onCursorLeave,
 	remoteCursor,
 }: GameBoardProps) => {
+	counters.boardRenders++;
+	usePaintProbe(cards);
 	const [lightboxCardId, setLightboxCardId] = useState<string | null>(null);
 	const boardRef = useRef<HTMLDivElement>(null);
 	const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());

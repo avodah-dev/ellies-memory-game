@@ -1,3 +1,22 @@
+import { track } from "../services/telemetry/core";
+import {
+	createSyncTrace,
+	cancelMatchTimer,
+	epochBump,
+	pauseTrace,
+	resumeTrace,
+	stateApplied,
+	writeSkipped,
+	writeEnqueued,
+	writeDequeued,
+	writeDropped,
+	snapshotGate,
+	errorCode,
+} from "../services/telemetry/gameplay";
+import {
+	listenerStart,
+	observedListener,
+} from "../services/telemetry/syncObserver";
 import {
 	useState,
 	useRef,
@@ -34,6 +53,7 @@ export function useGameSynchronization({
 	matchCheckTimeoutRef,
 	isCheckingMatchRef,
 }: Options) {
+	const [trace] = useState(createSyncTrace);
 	const [syncError, setSyncError] = useState<string | null>(null);
 	const pausedRef = useRef(false);
 	const writeQueue = useRef(Promise.resolve());
@@ -44,6 +64,7 @@ export function useGameSynchronization({
 	const localVersionRef = useRef(initialRevision.syncVersion ?? 0);
 	const lastGameRoundRef = useRef(initialRevision.gameRound ?? 0);
 	const cancelResolution = useCallback(() => {
+		cancelMatchTimer(matchCheckTimeoutRef, "sync-resolution");
 		if (matchCheckTimeoutRef.current)
 			clearTimeout(matchCheckTimeoutRef.current);
 		matchCheckTimeoutRef.current = null;
@@ -51,16 +72,19 @@ export function useGameSynchronization({
 	}, [matchCheckTimeoutRef, isCheckingMatchRef]);
 	const invalidateSession = useCallback(() => {
 		++generation.current;
+		epochBump(trace, generation.current, "invalidate");
 		cancelResolution();
-	}, [cancelResolution]);
+	}, [cancelResolution, trace]);
 	const pause = useCallback(
 		(message: string) => {
 			pausedRef.current = true;
+			pauseTrace(trace, "sync-error-or-connection");
 			++generation.current;
+			epochBump(trace, generation.current, "pause");
 			cancelResolution();
 			setSyncError(message);
 		},
-		[cancelResolution],
+		[cancelResolution, trace],
 	);
 	const accept = useCallback(
 		(state: OnlineGameState) => {
@@ -68,6 +92,7 @@ export function useGameSynchronization({
 			lastSyncedVersionRef.current = state.syncVersion;
 			localVersionRef.current = state.syncVersion;
 			lastGameRoundRef.current = state.gameRound;
+			stateApplied(state, "remote");
 			setGameState(state);
 		},
 		[cancelResolution, setGameState],
@@ -75,24 +100,43 @@ export function useGameSynchronization({
 	const resynchronize = useCallback(async () => {
 		if (!syncAdapter || !roomCode) return;
 		pausedRef.current = true;
+		pauseTrace(trace, "resync");
+		track("mm.sync.resync", { phase: "start" });
 		const epoch = ++generation.current;
+		epochBump(trace, epoch, "resync");
 		cancelResolution();
 		try {
 			const state = (await syncAdapter.getState()) as OnlineGameState | null;
-			if (epoch !== generation.current) return;
+			if (epoch !== generation.current) {
+				track("mm.sync.resync", { phase: "stale" });
+				return;
+			}
 			if (!state) throw new Error("Game is unavailable");
 			accept(state);
 			setSyncError(null);
 			pausedRef.current = false;
+			resumeTrace(trace, "resync");
+			track("mm.sync.resync", { phase: "resolved" });
 		} catch (error) {
+			track("mm.sync.resync", {
+				phase: "rejected",
+				error_code: errorCode(error),
+			});
 			if (epoch === generation.current)
 				setSyncError(
 					error instanceof Error ? error.message : "Synchronization failed",
 				);
 		}
-	}, [syncAdapter, roomCode, accept, cancelResolution]);
+	}, [syncAdapter, roomCode, accept, cancelResolution, trace]);
 	const syncToFirestore = useCallback(
-		(state: GameState, _context?: string) => {
+		(state: GameState, context?: string) => {
+			writeSkipped(
+				isOnlineMode,
+				syncAdapter,
+				pausedRef.current,
+				context,
+				state,
+			);
 			if (!isOnlineMode || !syncAdapter || pausedRef.current) return;
 			const epoch = generation.current;
 			const onlineState: OnlineGameState = {
@@ -101,8 +145,13 @@ export function useGameSynchronization({
 				lastUpdatedBy: localPlayerSlot,
 				gameRound: lastGameRoundRef.current,
 			};
+			const write = writeEnqueued(trace, onlineState, context, epoch);
 			writeQueue.current = writeQueue.current.then(async () => {
-				if (epoch !== generation.current || pausedRef.current) return;
+				if (epoch !== generation.current || pausedRef.current) {
+					writeDropped(trace, write, generation.current, pausedRef.current);
+					return;
+				}
+				writeDequeued(trace, write);
 				try {
 					await syncAdapter.setState(onlineState);
 				} catch (error) {
@@ -113,7 +162,7 @@ export function useGameSynchronization({
 				}
 			});
 		},
-		[isOnlineMode, syncAdapter, localPlayerSlot, pause],
+		[isOnlineMode, syncAdapter, localPlayerSlot, pause, trace],
 	);
 
 	// A different room is a different synchronization session. Old promises cannot
@@ -126,9 +175,10 @@ export function useGameSynchronization({
 			previousRoom.current = roomCode;
 		}
 		pausedRef.current = false;
+		resumeTrace(trace, "room-effect");
 		setSyncError(null);
 		return invalidateSession;
-	}, [roomCode, invalidateSession]);
+	}, [roomCode, invalidateSession, trace]);
 	useEffect(() => {
 		if (!isOnlineMode || !roomCode || gameState.gameStatus === "setup") return;
 		if (!onlineReady) pause("Connection interrupted. Game paused.");
@@ -149,10 +199,19 @@ export function useGameSynchronization({
 			(localPlayerSlot !== 1 && localPlayerSlot !== 2)
 		)
 			return;
-		return syncAdapter.subscribeToState(
+		const listener = listenerStart("hook", roomCode);
+		const stop = syncAdapter.subscribeToState(
 			(remoteState) => {
 				const remote = remoteState as OnlineGameState;
-				if (remote.gameRound < lastGameRoundRef.current) return;
+				if (remote.gameRound < lastGameRoundRef.current) {
+					snapshotGate(
+						remote,
+						"stale-round",
+						lastGameRoundRef.current,
+						lastSyncedVersionRef.current,
+					);
+					return;
+				}
 				const newRound = remote.gameRound > lastGameRoundRef.current;
 				// Confirm our own queued writes without rolling back later optimistic moves.
 				// A revision beyond our queue can come from another tab using the same UID.
@@ -161,6 +220,12 @@ export function useGameSynchronization({
 					remote.lastUpdatedBy === localPlayerSlot &&
 					remote.syncVersion <= localVersionRef.current
 				) {
+					snapshotGate(
+						remote,
+						"self-echo",
+						lastGameRoundRef.current,
+						lastSyncedVersionRef.current,
+					);
 					lastSyncedVersionRef.current = Math.max(
 						lastSyncedVersionRef.current,
 						remote.syncVersion,
@@ -172,18 +237,40 @@ export function useGameSynchronization({
 						gameRound: lastGameRoundRef.current,
 						syncVersion: lastSyncedVersionRef.current,
 					})
-				)
+				) {
+					snapshotGate(
+						remote,
+						"not-newer",
+						lastGameRoundRef.current,
+						lastSyncedVersionRef.current,
+					);
 					return;
+				}
+				snapshotGate(
+					remote,
+					"accepted",
+					lastGameRoundRef.current,
+					lastSyncedVersionRef.current,
+				);
 				++generation.current;
+				epochBump(trace, generation.current, "snapshot");
 				accept(remote);
 				// A confirmed snapshot can win the race with the explicit server read.
 				if (onlineReady) {
 					pausedRef.current = false;
+					resumeTrace(trace, "snapshot");
 					setSyncError(null);
 				}
 			},
-			(error) => pause(error.message),
+			(error) => {
+				track("mm.sync.resync", {
+					phase: "listener-error",
+					error_code: errorCode(error),
+				});
+				pause(error.message);
+			},
 		);
+		return observedListener(stop, listener, "hook", roomCode);
 	}, [
 		isOnlineMode,
 		syncAdapter,
@@ -192,8 +279,10 @@ export function useGameSynchronization({
 		onlineReady,
 		accept,
 		pause,
+		trace,
 	]);
 	return {
+		telemetryTrace: trace,
 		syncError,
 		resynchronize,
 		syncToFirestore,

@@ -1,4 +1,11 @@
 import {
+	instrumentAdapter,
+	isolateSyncObserver,
+	telemetrySyncObserver,
+	type SyncObserver,
+} from "../telemetry/syncObserver";
+import { nextId } from "../telemetry/gameplay";
+import {
 	doc,
 	getDocFromServer,
 	onSnapshot,
@@ -34,9 +41,14 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	private presenceService: PresenceService | null = null;
 	private subscriptions = new Set<() => void>();
 	private services: FirebaseServices;
-	constructor(client: FirebaseServices = services) {
+	private observer: ReturnType<typeof isolateSyncObserver>;
+	constructor(
+		client: FirebaseServices = services,
+		observer: SyncObserver = telemetrySyncObserver,
+	) {
 		super();
 		this.services = client;
+		this.observer = isolateSyncObserver(observer);
 	}
 	async connect() {
 		if (this.connected) return;
@@ -252,52 +264,73 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		if (!this.roomCode) throw new SyncError("disconnected", "Not in a room");
 		const code = this.roomCode,
 			next = parseOnlineState(state);
-		await runTransaction(this.services.db, async (tx) => {
-			const reference = doc(this.services.db, "games", code),
-				roomRef = doc(this.services.db, "rooms", code);
-			const snapshot = await tx.get(reference),
-				roomSnap = await tx.get(roomRef);
-			if (!snapshot.exists())
-				throw new SyncError("conflict", "Game no longer exists");
-			const current = parseStoredOnlineState(snapshot.data()),
-				room = parseRoom(roomSnap.data());
-			assertNextRevision(current, next);
-			if (
-				room.status !== "playing" ||
-				room.playerSlots[this.requireUser()] !== current.currentPlayer ||
-				next.lastUpdatedBy !== current.currentPlayer
-			)
-				throw new SyncError("conflict", "It is not your turn");
-			tx.set(reference, serializeGame(next));
-			tx.update(roomRef, { lastActivity: serverTimestamp() });
-		});
+		const trace = this.observer.txStart(next, code);
+		try {
+			await runTransaction(this.services.db, async (tx) => {
+				this.observer.txPhase(trace, "attempt");
+				const reference = doc(this.services.db, "games", code),
+					roomRef = doc(this.services.db, "rooms", code);
+				const snapshot = await tx.get(reference);
+				this.observer.txPhase(trace, "get-game");
+				const roomSnap = await tx.get(roomRef);
+				this.observer.txPhase(trace, "get-room");
+				if (!snapshot.exists())
+					throw new SyncError("conflict", "Game no longer exists");
+				const current = parseStoredOnlineState(snapshot.data()),
+					room = parseRoom(roomSnap.data());
+				assertNextRevision(current, next);
+				if (
+					room.status !== "playing" ||
+					room.playerSlots[this.requireUser()] !== current.currentPlayer ||
+					next.lastUpdatedBy !== current.currentPlayer
+				)
+					throw new SyncError("conflict", "It is not your turn");
+				tx.set(reference, serializeGame(next));
+				tx.update(roomRef, { lastActivity: serverTimestamp() });
+				this.observer.txPhase(trace, "commit");
+			});
+			this.observer.txEnd(trace);
+		} catch (error) {
+			this.observer.txEnd(trace, error);
+			throw error;
+		}
 	}
 	subscribeToState(
 		callback: (state: GameState) => void,
 		onError: (error: Error) => void = console.error,
 	) {
 		if (!this.roomCode) throw new SyncError("disconnected", "Not in a room");
-		return this.listen(
-			onSnapshot(
-				doc(this.services.db, "games", this.roomCode),
-				{ includeMetadataChanges: true },
-				(snapshot) => {
-					// Only confirmed server snapshots may replace optimistic state.
-					if (
-						!snapshot.exists() ||
-						snapshot.metadata.hasPendingWrites ||
-						snapshot.metadata.fromCache
-					)
-						return;
-					try {
-						callback(parseStoredOnlineState(snapshot.data()));
-					} catch (error) {
-						onError(error as Error);
-					}
-				},
-				onError,
-			),
+		const code = this.roomCode;
+		const listenerId = nextId();
+		this.observer.listener(code, "subscribe", listenerId);
+		const fail = (error: Error) => {
+			this.observer.listener(code, "error", listenerId, error);
+			onError(error);
+		};
+		const stop = onSnapshot(
+			doc(this.services.db, "games", this.roomCode),
+			{ includeMetadataChanges: true },
+			(snapshot) => {
+				this.observer.snapshotRaw(code, snapshot);
+				// Only confirmed server snapshots may replace optimistic state.
+				if (
+					!snapshot.exists() ||
+					snapshot.metadata.hasPendingWrites ||
+					snapshot.metadata.fromCache
+				)
+					return;
+				try {
+					callback(parseStoredOnlineState(snapshot.data()));
+				} catch (error) {
+					fail(error as Error);
+				}
+			},
+			fail,
 		);
+		return this.listen(() => {
+			this.observer.listener(code, "unsubscribe", listenerId);
+			stop();
+		});
 	}
 	async updatePlayerName(name: string) {
 		await this.presenceService?.updateName(name);
@@ -308,7 +341,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 }
 let instance: FirestoreSyncAdapter | null = null;
 export function getFirestoreSyncAdapter() {
-	return (instance ??= new FirestoreSyncAdapter());
+	return (instance ??= instrumentAdapter(new FirestoreSyncAdapter()));
 }
 export function resetFirestoreSyncAdapter() {
 	if (instance) void instance.disconnect().catch(console.error);

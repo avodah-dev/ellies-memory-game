@@ -1,3 +1,4 @@
+import { setPerformanceRoute } from "./services/telemetry/samplers";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import { RouterProvider } from "@tanstack/react-router";
@@ -76,9 +77,10 @@ async function main() {
 	const { bindStores } = await import("./services/telemetry/bindStores");
 	bindStores();
 	const { router } = await import("./router");
-	router.subscribe("onResolved", () =>
-		track("mm.nav.route", { path: router.state.location.pathname }),
-	);
+	router.subscribe("onResolved", () => {
+		track("mm.nav.route", { path: router.state.location.pathname });
+		setPerformanceRoute(router.state.location.pathname);
+	});
 	track("mm.app.boot", {
 		phase: "render-start",
 		ms_elapsed: performance.now() - bootStart,

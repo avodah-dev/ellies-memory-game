@@ -39,12 +39,53 @@ This runs `verify:local`'s checks plus a Linux/amd64 Docker build, actual contai
 ## Hosted release
 
 1. Open a PR and require the existing `verify` check. Blacksmith runs the full release gate on the PR head revision; branch protection still requires it to be up to date. Successful same-repository runs export the **actual tested Linux/amd64 image**, its content ID, archive checksum, build commit, and full Git tree hash as a GitHub Actions artifact retained for 14 days. PR jobs have no Fly credentials.
-2. After verification and explicit live-backend authorization, push the reviewed commit to `staging`. The **Fly release** workflow looks for a retained image from a completed successful verification/release run in this repository with the identical full Git tree. It checks the producing run/repository/event, GitHub's commit tree, manifest, archive checksum, loaded image ID/platform and baked-in build commit before publishing that image to Fly. No build or test suite is repeated on an image hit.
+2. After verification and live-backend authorization, promote the reviewed commit using the staging convention below. The **Fly release** workflow looks for a retained image from a completed successful verification/release run in this repository with the identical full Git tree. It checks the producing run/repository/event, GitHub's commit tree, manifest, archive checksum, loaded image ID/platform and baked-in build commit before publishing that image to Fly. No build or test suite is repeated on an image hit.
 3. Missing/expired images trigger full verification and export on Blacksmith before release. An API failure, invalid manifest, checksum mismatch, or image mismatch fails the release; it does not quietly downgrade to a cache miss. Images uploaded by failed/canceled/in-progress runs or forks are ineligible. Workflow, test, lockfile, rules and Fly-config changes all change the tree key.
 4. Verify preview before approving merge to `main`. Main uses the same promotion path. A merge/squash commit with an identical tree reuses the image. A changed tree requires full verification. Rules remain a separately approved deployment and are never changed by this workflow.
 5. Post-deploy checks verify `/healthz` against the **image build commit**, runtime environment, uncached configuration/ping, SPA routes and bundled JavaScript. These HTTP checks do not execute the app or touch Firebase/PostHog. Fresh-room gameplay smoke tests remain a separate authorized live step.
 
 The build-info UI and `/healthz.commit` truthfully retain the original tested image's commit. A tree-identical merge does not relabel or rebuild its contents. The deployment run summary records the branch's deployment commit, matching full tree, original image build commit, image ID, and source verification run; the Fly registry tag uses the deployment commit. Use that mapping when comparing GitHub's merge SHA with the app's Build Info.
+
+### Staging branch convention
+
+Keep `staging` as an append-only deployment history. Main accepts squash merges, so its commits differ from the original PR commits already rehearsed on staging. Before each rehearsal, merge current `origin/main` into staging locally, then merge the exact tested PR head. Push only the final result. Never force-push, reset the remote staging branch, merge staging into a feature branch, or open a staging-to-main PR. Production receives the reviewed feature PR through its normal squash merge.
+
+Start from a clean working tree. Fetch, choose the full PR head SHA whose required verification passed, and confirm it includes current main:
+
+```sh
+git fetch origin
+tested_commit='<full-verified-PR-head-SHA>'
+git merge-base --is-ancestor origin/main "$tested_commit"
+```
+
+If the ancestry check fails, update the feature branch from main and verify its new head before continuing. Create a fresh local promotion branch from fetched staging; choose an unused branch name for each attempt:
+
+```sh
+git switch -c 'release/staging-rehearsal-<unique-name>' origin/staging
+git merge --no-ff origin/main -m 'Reconcile main into staging'
+git merge --no-ff "$tested_commit" -m 'Promote verified PR to staging'
+```
+
+Run each merge separately and stop on a conflict. Squash ancestry can produce conflicts even when the prior deployed trees were identical. Inspect the conflicting changes against main and the tested head; do not blindly select an entire side. Resolve and commit that merge before continuing, or abort it. An already-up-to-date merge is fine. Do not push the intermediate reconciliation commit: that would trigger an unnecessary deployment.
+
+Require the final **full tree**, including workflows and docs, to equal the verified PR tree:
+
+```sh
+git diff --exit-code "$tested_commit" HEAD
+test "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "${tested_commit}^{tree}")"
+```
+
+Both checks must pass before the normal fast-forward push:
+
+```sh
+git push origin HEAD:staging
+```
+
+If the trees differ, stop: a previous unreleased rehearsal may have left changes on staging, or conflict resolution may have changed the candidate. Reconcile those changes explicitly; any intended application change belongs on the feature branch and needs verification there. Do not bypass the equality check because deployment could run another test suite. If the push is rejected because staging advanced, fetch and repeat from its new tip; never force it.
+
+After the push, inspect the actual **Fly release** run and its source verification run, verify the deployed build through `/healthz`, and perform the authorized preview checks. A local merge or manual smoke command alone does not rehearse CI. If main advances before production merge, update and verify the PR and rehearse its new tree again. A failed rehearsal stays in staging history; a correction is another normal promotion. `workflow_dispatch` may rerun the existing main/staging deployment, but does not deploy arbitrary PR branches. This convention keeps the existing real staging-push trigger and image provenance checks.
+
+### Verification and promotion prerequisites
 
 PRs changing only `README.md`, `CHANGELOG.md`, or Markdown under `docs/` run lint/types/unit/server checks and skip browsers/containers. They produce **no deployable image**. Renames are classified as deletion plus addition so moving code into docs cannot skip tests. A subsequent deployment of a docs-only tree still needs a fully verified image and will run the full gate if none exists. The required `verify` job always runs, avoiding permanently pending path-filtered branch checks.
 
