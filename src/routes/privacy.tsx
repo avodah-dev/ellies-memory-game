@@ -22,7 +22,7 @@ export function PrivacyPage() {
 				</h1>
 
 				<div className="prose prose-gray max-w-none space-y-6">
-					<p className="text-sm text-gray-500">Last updated: December 2025</p>
+					<p className="text-sm text-gray-500">Last updated: September 2026</p>
 
 					<section>
 						<h2 className="text-xl font-semibold text-gray-800 mt-8 mb-4">
@@ -61,8 +61,8 @@ export function PrivacyPage() {
 						<p className="text-gray-600">
 							Your game settings (card packs, backgrounds, display preferences)
 							are stored locally on your device using your browser's
-							localStorage. This data never leaves your device and is only used
-							to remember your preferences between sessions.
+							localStorage. Online room settings are also shared with your
+							opponent through Firebase.
 						</p>
 
 						<h3 className="text-lg font-medium text-gray-700 mt-6 mb-3">
@@ -97,18 +97,29 @@ export function PrivacyPage() {
 							Analytics
 						</h3>
 						<p className="text-gray-600">
-							We use PostHog to collect anonymous analytics data to help us
-							improve the game and debug issues. This includes:
+							We use PostHog analytics and diagnostics to help us improve the
+							game and debug issues. This includes:
 						</p>
 						<ul className="list-disc list-inside text-gray-600 mt-2 space-y-1">
 							<li>Page views and general usage patterns</li>
 							<li>Error reports and crash data</li>
 							<li>Device type and browser information</li>
+							<li>
+								A random device ID saved in localStorage and a new ID for each
+								page session
+							</li>
+							<li>
+								Diagnostic timings and connection information tagged with room
+								code and anonymous multiplayer ID
+							</li>
 						</ul>
 						<p className="text-gray-600 mt-2">
-							Analytics data is anonymized and does not include your player
-							names or personal information. Analytics are only collected in
-							production and not during development.
+							Diagnostic events do not include player names. Analytics run in
+							preview and production, and are relayed through the app’s own
+							domain to PostHog’s US service. Local emulator development stores
+							diagnostics only in IndexedDB and sends no analytics. The random
+							device ID helps us compare sessions; it is not a device
+							fingerprint.
 						</p>
 					</section>
 
@@ -121,7 +132,7 @@ export function PrivacyPage() {
 							<li>Payment information (the game is free)</li>
 							<li>Location data</li>
 							<li>Social media profiles</li>
-							<li>Personal identifiers beyond anonymous session IDs</li>
+							<li>Account profiles or a device fingerprint</li>
 						</ul>
 					</section>
 
@@ -132,7 +143,9 @@ export function PrivacyPage() {
 						<ul className="list-disc list-inside text-gray-600 space-y-1">
 							<li>
 								<strong>Local Storage:</strong> Your device stores game
-								preferences. You can clear this by clearing your browser data.
+								preferences, a random device ID and a local diagnostic log.
+								Reload App preserves this data; clearing site storage removes
+								it.
 							</li>
 							<li>
 								<strong>Firebase:</strong> Online game data is stored in Google
@@ -153,7 +166,9 @@ export function PrivacyPage() {
 						<ul className="list-disc list-inside text-gray-600 space-y-1">
 							<li>
 								<strong>Clear Local Data:</strong> You can clear your browser's
-								localStorage to remove all saved preferences.
+								site storage to remove saved preferences, the device ID and
+								local diagnostic logs. A new device ID is generated next time
+								you open the app.
 							</li>
 							<li>
 								<strong>Player Names:</strong> You can change your player name
@@ -173,7 +188,8 @@ export function PrivacyPage() {
 						<p className="text-gray-600">
 							Matchimus is designed to be family-friendly. We do not knowingly
 							collect personal information from children. The game requires no
-							account creation and only stores user-entered player names.
+							account creation. The storage and diagnostics described above also
+							apply when children use the app.
 						</p>
 					</section>
 
