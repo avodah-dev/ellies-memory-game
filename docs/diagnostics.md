@@ -132,7 +132,7 @@ The stale `triggerGameFinish` comment mentions a GameBoard callback, but current
 
 ## Investigation queries
 
-Use a fresh room with both devices on the same instrumentation build. Claude validated all twelve SQL blocks at documentation commit `bf495e8` against production room RAWR in project 261647 on 2026-09-20, including timestamp bounds, the unmatched-gesture CTE, dropped-work queries and the three-way delivery join. Three queries had output limits to cap returned rows. The unmatched-gesture and dropped-write queries returned no rows; all observed pointer input was mouse. Boolean filters were also confirmed on TUFL data. The later rejection-to-turn-acceptance query added in `475e31d` still awaits HogQL execution. This validates those queries on smoke-test data, not a complete real-device baseline. Use the clock-coverage query above first. Single-device durations are monotonic; cross-device differences remain estimates and may be negative because of calibration uncertainty.
+Use a fresh room with both devices on the same instrumentation build. Claude validated all twelve SQL blocks at documentation commit `bf495e8` against production room RAWR in project 261647 on 2026-09-20, including timestamp bounds, the unmatched-gesture CTE, dropped-work queries and the three-way delivery join. Three queries had output limits to cap returned rows. The unmatched-gesture and dropped-write queries returned no rows; all observed pointer input was mouse. Boolean filters were also confirmed on TUFL data. Claude also validated the rejection-to-turn-acceptance query added in `475e31d` against stored GQTJ data, reproducing the local guest timings exactly. All thirteen SQL blocks are now validated. This validates those queries on smoke-test data, not a complete real-device baseline. Use the clock-coverage query above first. Single-device durations are monotonic; cross-device differences remain estimates and may be negative because of calibration uncertainty.
 
 Flip acceptance and rejection by device:
 
@@ -185,6 +185,10 @@ GROUP BY r.device, r.session, r.round, r.slot, r.input_id,
          r.rejected_seq, r.rejected_mono
 ORDER BY r.device, r.session, r.rejected_seq
 ```
+
+Delays of tens to a few hundred milliseconds identify candidates for the “tap just before turn acceptance” pattern; count them using an explicit analysis window and inspect adjacent state/paint events before drawing a conclusion. Large delays can reflect taps during an ordinary opponent turn, but do not by themselves rule out a stall. NULL means no later matching accepted own-turn snapshot was captured within the query window, round and page session; it does not prove the turn never came.
+
+The GQTJ validation returned guest delays 1844.7, 103.1 and 61.8 ms (device `ac1de544…`, slot 2), matching the local replay. It also returned host inputs 3 and 4 at 116508.8 and 116467.2 ms (device `d08b11bd…`, slot 1). Those host taps occurred during the smoke driver’s long wait and are not regression evidence.
 
 A positive delay establishes that the click preceded a later accepted own-turn state; it does not establish what was visually displayed or why delivery took that long. Several rejected clicks can map to the same acceptance. A resynchronization may grant the turn outside the snapshot gate, leaving a null here; inspect `mm.sync.resync` and `mm.state.applied` before calling it missing delivery. Use a new instrumentation build: the stale revision metadata in preview build `548a89b` was corrected before production build `657931f`.
 
