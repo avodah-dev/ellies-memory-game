@@ -40,6 +40,9 @@ export function startClockCalibration() {
 			});
 	};
 	const invalidate = (reason: string) => {
+		// Resume establishes a new watchdog baseline, before its first delayed tick.
+		lastMono = performance.now();
+		lastWall = Date.now();
 		controller?.abort();
 		controller = null;
 		invalidateHttpClock();
