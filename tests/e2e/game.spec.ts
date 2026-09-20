@@ -86,6 +86,38 @@ test("Reload App removes a controlling legacy worker and cached app while preser
 	page,
 }) => {
 	await home(page);
+	const deviceId = await page.evaluate(() =>
+		localStorage.getItem("matchimus-device-id"),
+	);
+	expect(deviceId).toMatch(/^[a-f0-9-]{36}$/);
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					new Promise<boolean>((resolve, reject) => {
+						const request = indexedDB.open("matchimus-logs");
+						request.onerror = () => reject(request.error);
+						request.onsuccess = () => {
+							const db = request.result;
+							const logs = db.transaction("logs").objectStore("logs").getAll();
+							logs.onerror = () => reject(logs.error);
+							logs.onsuccess = () => {
+								db.close();
+								resolve(
+									logs.result.some(
+										(entry) =>
+											entry.message === "mm.session.start" &&
+											entry.context.environment === "emulator" &&
+											entry.context.device_id ===
+												localStorage.getItem("matchimus-device-id"),
+									),
+								);
+							};
+						};
+					}),
+			),
+		)
+		.toBe(true);
 	await page.evaluate(async () => {
 		localStorage.setItem("reload-saved-setting", "keep-me");
 		document.cookie = "reload-session=keep-me; SameSite=Strict; path=/";
@@ -146,6 +178,7 @@ test("Reload App removes a controlling legacy worker and cached app while preser
 			workers: (await navigator.serviceWorker.getRegistrations()).length,
 			controller: navigator.serviceWorker.controller !== null,
 			caches: await caches.keys(),
+			deviceId: localStorage.getItem("matchimus-device-id"),
 			setting: localStorage.getItem("reload-saved-setting"),
 			cookie: document.cookie.includes("reload-session=keep-me"),
 			indexedSetting: await new Promise((resolve, reject) => {
@@ -169,6 +202,7 @@ test("Reload App removes a controlling legacy worker and cached app while preser
 		workers: 0,
 		controller: false,
 		caches: [],
+		deviceId,
 		setting: "keep-me",
 		cookie: true,
 		indexedSetting: "keep-me",

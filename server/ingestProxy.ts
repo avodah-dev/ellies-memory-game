@@ -58,11 +58,46 @@ function targetFor(rawUrl: string): URL {
 	return target;
 }
 
+// Process-local limits bound public-proxy work without parsing SDK bodies.
+// Fly supplies fly-client-ip; direct connections are grouped by socket address.
+export function createIngestLimiter() {
+	const clients = new Map<string, { tokens: number; at: number }>();
+	let sweptAt = 0;
+	return (ip: string, now = Date.now()) => {
+		if (now - sweptAt > 60000) {
+			for (const [key, value] of clients)
+				if (now - value.at > 120000) clients.delete(key);
+			sweptAt = now;
+		}
+		let client = clients.get(ip);
+		if (!client) {
+			if (clients.size >= 4096) return false;
+			client = { tokens: 60, at: now };
+			clients.set(ip, client);
+		}
+		client.tokens = Math.min(
+			60,
+			client.tokens + (Math.max(0, now - client.at) * 4) / 1000,
+		);
+		client.at = now;
+		if (client.tokens < 1) return false;
+		client.tokens--;
+		return true;
+	};
+}
+
 export function registerIngestProxy(
 	app: FastifyInstance,
 	fetchUpstream: IngestFetch = fetch,
 ) {
 	return app.register(async (proxy) => {
+		const allow = createIngestLimiter();
+		let active = 0;
+		proxy.addHook("onRequest", async (request, reply) => {
+			const flyIp = request.headers["fly-client-ip"];
+			const ip = typeof flyIp === "string" && isIP(flyIp) ? flyIp : request.ip;
+			if (!allow(ip)) return reply.header("retry-after", "1").code(429).send();
+		});
 		// Replace inherited JSON/text parsers only in this plugin. Compressed SDK
 		// payloads (including text/plain gzip bytes) must reach PostHog unchanged.
 		proxy.removeAllContentTypeParsers();
@@ -83,10 +118,18 @@ export function registerIngestProxy(
 				} catch {
 					return reply.code(400).send();
 				}
+				if (active >= 16)
+					return reply.header("retry-after", "1").code(429).send();
 				const headers = new Headers();
 				for (const name of ["content-type", "user-agent", "accept"]) {
 					const value = request.headers[name];
 					if (typeof value === "string") headers.set(name, value);
+				}
+				if (request.method === "GET" && target.origin === ASSETS_ORIGIN) {
+					for (const name of ["if-none-match", "if-modified-since"]) {
+						const value = request.headers[name];
+						if (typeof value === "string") headers.set(name, value);
+					}
 				}
 				const clientIp = request.headers["fly-client-ip"];
 				if (typeof clientIp === "string" && isIP(clientIp))
@@ -94,6 +137,7 @@ export function registerIngestProxy(
 				const controller = new AbortController();
 				const timeout = setTimeout(() => controller.abort(), 10000);
 				try {
+					active++;
 					const upstream = await fetchUpstream(target, {
 						method: request.method,
 						headers,
@@ -129,6 +173,7 @@ export function registerIngestProxy(
 					request.log.warn("PostHog upstream request failed");
 					return reply.code(502).send();
 				} finally {
+					active--;
 					clearTimeout(timeout);
 				}
 			},

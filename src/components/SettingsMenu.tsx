@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DeviceIdentity } from "./DeviceIdentity";
 
 interface SettingsMenuProps {
   cardSize: number;
@@ -396,6 +397,7 @@ export const SettingsMenu = ({
           onToggle={() => setAdvancedOpen(!advancedOpen)}
         >
           <div className="space-y-4">
+            <DeviceIdentity />
             {/* End Turn Button - only during gameplay */}
             {onEndTurn && gameStatus === "playing" && (
               <div>

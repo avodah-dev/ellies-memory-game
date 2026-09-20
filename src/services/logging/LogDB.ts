@@ -58,6 +58,23 @@ class LogDB {
 		return id ?? 0;
 	}
 
+	async addLogs(entries: Omit<LogEntry, "id">[]): Promise<void> {
+		await this.db.logs.bulkAdd(entries);
+	}
+
+	async trimToCount(maximum: number): Promise<void> {
+		await this.db.transaction("rw", this.db.logs, async () => {
+			const excess = (await this.db.logs.count()) - maximum;
+			if (excess <= 0) return;
+			const boundary = await this.db.logs
+				.orderBy(":id")
+				.offset(excess - 1)
+				.first();
+			if (boundary?.id !== undefined)
+				await this.db.logs.where(":id").belowOrEqual(boundary.id).delete();
+		});
+	}
+
 	async getLogs(query: LogQuery = {}): Promise<LogEntry[]> {
 		let collection;
 

@@ -375,3 +375,70 @@ describe("PostHog proxy", () => {
 		},
 	);
 });
+
+it("bounds per-client bursts and replenishes without a timer", async () => {
+	const { createIngestLimiter } = await import("./ingestProxy");
+	const allow = createIngestLimiter();
+	for (let i = 0; i < 60; i++) expect(allow("one", 1000)).toBe(true);
+	expect(allow("one", 1000)).toBe(false);
+	expect(allow("two", 1000)).toBe(true);
+	expect(allow("one", 1250)).toBe(true);
+	expect(allow("one", 1250)).toBe(false);
+});
+it("forwards asset cache validators and preserves a bodyless304", async () => {
+	const upstream = vi
+		.fn<IngestFetch>()
+		.mockResolvedValue(
+			new Response(null, { status: 304, headers: { etag: '"v1"' } }),
+		);
+	const server = await serverWith(upstream);
+	const response = await server.inject({
+		url: "/ingest/static/array.js",
+		headers: {
+			"if-none-match": '"v1"',
+			"if-modified-since": "Sun, 20 Sep 2026 10:00:00 GMT",
+		},
+	});
+	expect(response.statusCode).toBe(304);
+	expect(response.body).toBe("");
+	expect(response.headers.etag).toBe('"v1"');
+	expect(
+		new Headers(upstream.mock.calls[0][1].headers).get("if-none-match"),
+	).toBe('"v1"');
+	expect(
+		new Headers(upstream.mock.calls[0][1].headers).has("if-modified-since"),
+	).toBe(true);
+});
+it("limits concurrent upstream work and releases capacity after completion", async () => {
+	const releases: (() => void)[] = [];
+	const upstream = vi
+		.fn<IngestFetch>()
+		.mockImplementation(
+			() =>
+				new Promise((resolve) =>
+					releases.push(() => resolve(new Response("ok"))),
+				),
+		);
+	const server = await serverWith(upstream);
+	const requests = Array.from({ length: 16 }, () =>
+		server.inject("/ingest/static/array.js").then((result) => result),
+	);
+	await vi.waitFor(() => expect(upstream).toHaveBeenCalledTimes(16));
+	const limited = await server.inject("/ingest/static/array.js");
+	expect(limited.statusCode).toBe(429);
+	expect(limited.headers["retry-after"]).toBe("1");
+	releases.forEach((release) => release());
+	await Promise.all(requests);
+	upstream.mockResolvedValue(new Response("ok"));
+	expect((await server.inject("/ingest/static/array.js")).statusCode).toBe(200);
+});
+it("rejects excess client requests before sending their bodies upstream", async () => {
+	const upstream = vi
+		.fn<IngestFetch>()
+		.mockImplementation(async () => new Response("ok"));
+	const server = await serverWith(upstream);
+	vi.spyOn(Date, "now").mockReturnValue(1000);
+	for (let i = 0; i < 60; i++) await server.inject("/ingest/batch/");
+	expect((await server.inject("/ingest/batch/")).statusCode).toBe(429);
+	expect(upstream).toHaveBeenCalledTimes(60);
+});
