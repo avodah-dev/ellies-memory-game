@@ -111,7 +111,7 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 | `mm.game.flip` | `result`: accepted/paused/not-ready/not-your-turn/checking-match/not-playing/two-selected/missing-card/already-flipped/already-matched. Also `paused`, `online_ready`, `checking_match`, `local_slot`, `mode`, and the state being evaluated. Gate precedence follows the existing application branches. |
 | `mm.game.state` | `phase='committed'`, mode, local slot, online readiness and game status. Both local and online controllers exist; filter `mode='online'` for room diagnosis. |
 | `mm.game.endturn` | accepted/paused/not-ready/not-your-turn. |
-| `mm.game.match` | match/mismatch/lost-authority/missing-selected. |
+| `mm.game.match` | match/mismatch/lost-authority/missing-selected. Resolved pairs include `trigger`: timer or next-card. |
 | `mm.game.finish_check` | `matched_count`, `card_count`, `finished`, game status. Emitted immediately after the active `checkAndFinishGame(applyMatch(...))` path, before applying/synchronizing the final state. |
 | `mm.game.match_timer` | `timer_id`, scheduled/fired/cancelled, `delay_ms`, `ms_elapsed`, cancellation reason. Covers effect cleanup and cancellation by synchronization, reset, initialization and end-turn. Cleanup after firing is not a cancellation. |
 | `mm.nav.results_timer` | Same timer fields, plus navigation-resolved/navigation-rejected. Observes the existing 1200 ms effect, with unchanged dependencies. |
@@ -462,7 +462,9 @@ Run lobby and mid-game tests on both real devices for the baseline. Synthetic br
 
 This joins mm.input.activation to its successful write and the other device's first paint opportunity. Touch/pen and primary-button mouse start at down; keyboard/assistive input starts at click. It uses neither client wall time nor writer acknowledgement as its start. The paint probe estimates a browser paint opportunity, not physical display pixels.
 
-For the pre-fix EUSG baseline on cecc356, explicitly substitute event = 'mm.input.click' for event = 'mm.input.activation' below; that build had click-only activation. Run each build/room separately, label the start event, and report missing intended actions separately. Do not compare pointer-down start with the old click start as if they were identical: for a contact-to-paint comparison, join the baseline click's gesture_id back to its down in the same device/session, excluding ambiguous links. The post-fix raw click stream includes suppressed duplicates and must not be used as the latency origin. This changed activation query needs preview-data validation; prior SQL confirmations apply to the earlier click query.
+For the pre-fix EUSG baseline on cecc356, explicitly substitute event = 'mm.input.click' for event = 'mm.input.activation' below; that build had click-only activation. Run each build/room separately, label the start event, and report missing intended actions separately. Do not compare pointer-down start with the old click start as if they were identical: for a contact-to-paint comparison, join the baseline click's gesture_id back to its down in the same device/session, excluding ambiguous links. The post-fix raw click stream includes suppressed duplicates and must not be used as the latency origin. The activation query was validated on preview RLPZ/c964f60; the flip-context filter below needs validation when the match-only next-card change reaches preview.
+
+A next-card activation can resolve a matching pair and then flip the new card in one input task. Both writes retain that input ID but have distinct revisions and contexts. Filter successful writes to `context LIKE 'flip:%'` to measure the requested flip once; do not count `match:complete` as another activation. `mm.game.match.trigger` distinguishes `timer` from `next-card`, and early timer cancellation uses reason `next-card`. Mismatches keep the full reveal and reject third taps.
 
 The 100 ms endpoint-uncertainty cap is an explicit analysis choice. Inspect calibration coverage and excluded counts separately; absence is not zero latency. Report lower/upper intervals, with the clock-rate/precision assumptions in the clock contract, alongside the midpoint estimate.
 
@@ -494,6 +496,7 @@ JOIN (
     WHERE timestamp > now() - INTERVAL 7 DAY
       AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
       AND properties.ok = true AND properties.input_id IS NOT NULL
+      AND properties.context LIKE 'flip:%'
 ) AS w ON i.device = w.device AND i.session = w.session AND i.input = w.input
 JOIN (
     SELECT properties.device_id AS device, properties.page_session_id AS session,

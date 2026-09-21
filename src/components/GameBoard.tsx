@@ -453,6 +453,12 @@ export const GameBoard = ({
 				)}
 
 				{cards.map((card, index) => {
+					// Keep the grid cell measurable after a match too. An immediate
+					// next-card press can batch away the intermediate selected render.
+					const rememberCell = (el: HTMLDivElement | null) => {
+						if (el) cardRefs.current.set(card.id, el);
+						else cardRefs.current.delete(card.id);
+					};
 					// Show placeholder for matched cards OR cards currently flying (local state)
 					const isFlying = flyingCards.has(card.id);
 					const shouldShowPlaceholder = card.isMatched || isFlying;
@@ -471,6 +477,7 @@ export const GameBoard = ({
 						// Placeholder for matched cards (or cards that are flying)
 						<div
 							key={card.id}
+							ref={rememberCell}
 							className="rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 opacity-15"
 							style={{
 								width: `${cardSize}px`,
@@ -480,13 +487,7 @@ export const GameBoard = ({
 					) : (
 						<div
 							key={card.id}
-							ref={(el) => {
-								if (el) {
-									cardRefs.current.set(card.id, el);
-								} else {
-									cardRefs.current.delete(card.id);
-								}
-							}}
+							ref={rememberCell}
 							className={isAnimating ? "card-fly-in" : ""}
 							style={
 								{

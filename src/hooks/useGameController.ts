@@ -327,7 +327,7 @@ export function useGameController(
 	// ============================================
 
 	const checkForMatch = useCallback(
-		(_selectedIds: string[], currentState: GameState) => {
+		(currentState: GameState, trigger: "timer" | "next-card") => {
 			// Double-check authority
 			if (isOnlineMode && localPlayerSlot !== currentState.currentPlayer) {
 				track("mm.game.match", {
@@ -355,6 +355,7 @@ export function useGameController(
 			track("mm.game.match", {
 				...stateFields(currentState),
 				result: isMatch ? "match" : "mismatch",
+				trigger,
 			});
 			const cardIds: [string, string] = [firstCard.id, secondCard.id];
 			const currentPlayerId = currentState.currentPlayer;
@@ -428,7 +429,7 @@ export function useGameController(
 
 	const flipCard = useCallback(
 		(cardId: string) => {
-			const gameState = stateRef.current;
+			let gameState = stateRef.current;
 			if (pausedRef.current || !onlineReady) {
 				trackBlockedFlip(
 					gameState,
@@ -457,7 +458,25 @@ export function useGameController(
 				return;
 			}
 
-			// Prevent during match check
+			// A valid next-card press can consume a known match, even before the
+			// scheduling effect has run. Mismatches retain their full reveal.
+			const nextCard = gameState.cards.find((card) => card.id === cardId);
+			if (
+				gameState.gameStatus === "playing" &&
+				nextCard &&
+				!nextCard.isFlipped &&
+				!nextCard.isMatched &&
+				checkMatch(gameState)?.isMatch
+			) {
+				cancelMatchTimer(matchCheckTimeoutRef, "next-card");
+				if (matchCheckTimeoutRef.current)
+					clearTimeout(matchCheckTimeoutRef.current);
+				matchCheckTimeoutRef.current = null;
+				checkForMatch(gameState, "next-card");
+				gameState = stateRef.current;
+			}
+
+			// Prevent during an unresolved mismatch check
 			if (isCheckingMatchRef.current) {
 				trackFlip(
 					gameState,
@@ -515,6 +534,7 @@ export function useGameController(
 			pausedRef,
 			mode,
 			syncToFirestore,
+			checkForMatch,
 		],
 	);
 
@@ -535,17 +555,30 @@ export function useGameController(
 			settings.flipDuration,
 			matchCheckTimeoutRef,
 		);
-		matchCheckTimeoutRef.current = setTimeout(() => {
+		const epoch = generation.current;
+		const cards = gameState.cards;
+		const timeout = setTimeout(() => {
+			// Clearing a timeout cannot retract a callback already queued for dispatch.
+			// Its identity, session epoch and board must still own this resolution.
+			if (
+				matchCheckTimeoutRef.current !== timeout ||
+				generation.current !== epoch ||
+				stateRef.current.cards !== cards ||
+				pausedRef.current
+			)
+				return;
 			timerFire(timerTrace);
 			matchCheckTimeoutRef.current = null;
-			checkForMatch([], stateRef.current);
+			checkForMatch(stateRef.current, "timer");
 		}, settings.flipDuration);
+		matchCheckTimeoutRef.current = timeout;
 		return () => {
 			timerCancel(timerTrace, "effect-cleanup");
-			if (matchCheckTimeoutRef.current)
-				clearTimeout(matchCheckTimeoutRef.current);
-			matchCheckTimeoutRef.current = null;
-			isCheckingMatchRef.current = false;
+			clearTimeout(timeout);
+			if (matchCheckTimeoutRef.current === timeout) {
+				matchCheckTimeoutRef.current = null;
+				isCheckingMatchRef.current = false;
+			}
 		};
 	}, [
 		gameState.cards,
@@ -555,6 +588,8 @@ export function useGameController(
 		syncError,
 		settings.flipDuration,
 		checkForMatch,
+		generation,
+		pausedRef,
 	]);
 	const resetGame = useCallback(() => {
 		cancelMatchTimer(matchCheckTimeoutRef, "reset");

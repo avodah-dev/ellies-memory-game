@@ -305,6 +305,9 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 	await page.keyboard.press("Enter");
 	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
 	await card(page, 1).click();
+	await card(page, 2).click();
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await expect(page.locator(".card-fly-to-player")).toHaveCount(2);
 	await expect(card(page, 0)).toHaveCount(0);
 	// Preview actions must remain native buttons even when their artwork is matched.
 	await page.getByRole("button", { name: "1", exact: true }).click();
@@ -329,7 +332,9 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 		await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
 	}
 	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
-	for (const id of [2, 4, 6]) await match(page, id);
+	await card(page, 3).click();
+	await expect(card(page, 2)).toHaveCount(0);
+	for (const id of [4, 6]) await match(page, id);
 	await expect(page).toHaveURL(/\/game-over$/);
 	await expect(page.getByText(/wins/i).first()).toBeVisible();
 	await page.getByRole("button", { name: "Explore All Cards", exact: true }).click();
@@ -343,6 +348,18 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 	await expect(page.locator("main button[data-card-id]:enabled")).toHaveCount(
 		8,
 	);
+	// All three contacts can be batched before a selected-card render. The
+	// matched pair must still have geometry for its flight from the grid.
+	await page.getByRole("application", { name: "Game board" }).evaluate(async (board) => {
+		await Promise.allSettled(board.getAnimations({ subtree: true }).map(a => a.finished));
+	});
+	await page.addStyleTag({ content: ".card-fly-to-player { animation-play-state: paused !important; }" });
+	await page.evaluate(() => {
+		for (const id of [0, 1, 2]) document.querySelector(`main button[data-card-id="card-${id}"]`)!
+			.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: id + 10, pointerType: "touch", button: 0 }));
+	});
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await expect(page.locator(".card-fly-to-player")).toHaveCount(2);
 });
 test("two simultaneous touch contacts flip on down once, then mouse and keyboard still work", async ({
 	page,
@@ -816,8 +833,21 @@ test("named players start a 16-pair Thanksgiving game with strict rules", async 
 		await card(host, 0).click();
 		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
 		await card(host, 1).click();
+		await card(host, 2).click();
+		await expect(card(host, 2)).toHaveAttribute("aria-pressed", "true");
+		await expect(host.locator(".card-fly-to-player")).toHaveCount(2);
 		await expect(card(host, 0)).toHaveCount(0);
 		await expect(card(guest, 0)).toHaveCount(0);
+		await expect(card(guest, 2)).toHaveAttribute("aria-pressed", "true");
+		await expect.poll(async () => {
+			const rows = await diagnostics(host);
+			const resolution = rows.find(r => r.message === "mm.game.match" && r.context.trigger === "next-card");
+			const writes = rows.filter(r => r.message === "mm.sync.write.result" && r.context.ok === true);
+			const matchWrite = writes.find(r => r.context.context === "match:complete");
+			const flipWrite = writes.find(r => r.context.context === "flip:card-2");
+			return Boolean(resolution && matchWrite && flipWrite &&
+				Number(flipWrite.context.sync_version) === Number(matchWrite.context.sync_version) + 1);
+		}).toBe(true);
 	} finally {
 		await guestContext.close();
 	}
