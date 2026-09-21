@@ -306,9 +306,37 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
 	await card(page, 1).click();
 	await expect(card(page, 0)).toHaveCount(0);
+	// Preview actions must remain native buttons even when their artwork is matched.
+	await page.getByRole("button", { name: "1", exact: true }).click();
+	await expect(page.getByRole("heading", { name: "Player 1's Matches" })).toBeVisible();
+	const preview = page.getByRole("dialog").getByTitle("Click to view card details").first();
+	const tapPreview = async () => {
+		const box = await preview.boundingBox();
+		if (!box) throw Error("Missing card preview button");
+		if (test.info().project.name === "webkit")
+			await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+		else await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+		await expect(page.getByRole("button", { name: "Close lightbox", exact: true })).toBeVisible();
+		await expect(page.getByRole("region", { name: "Card display" })).toBeVisible();
+	};
+	await tapPreview();
+	await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
+	await expect(preview.locator("button")).toHaveCount(0);
+	for (const key of ["Enter", "Space"]) {
+		await preview.focus();
+		await page.keyboard.press(key);
+		await expect(page.getByRole("button", { name: "Close lightbox", exact: true })).toBeVisible();
+		await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
+	}
+	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
 	for (const id of [2, 4, 6]) await match(page, id);
 	await expect(page).toHaveURL(/\/game-over$/);
 	await expect(page.getByText(/wins/i).first()).toBeVisible();
+	await page.getByRole("button", { name: "Explore All Cards", exact: true }).click();
+	await tapPreview();
+	await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
+	await expect(page.getByRole("dialog").locator("button button")).toHaveCount(0);
+	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
 	await page.getByRole("button", { name: /play again/i }).click();
 	await page.getByRole("button", { name: /replay/i }).click();
 	await expect(page).toHaveURL(/\/local\/game$/);

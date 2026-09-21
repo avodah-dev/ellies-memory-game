@@ -81,7 +81,6 @@ export function AppShell({ model }: { model: AppModel }) {
 		selectedPlayerForMatches,
 		players,
 		setSelectedPlayerForMatches,
-		effectiveCardBack,
 		handlePlayerNameChange,
 		updatePlayerColor,
 		gameMode,
@@ -287,7 +286,6 @@ export function AppShell({ model }: { model: AppModel }) {
 								cards={gameState.cards}
 								useWhiteCardBackground={useWhiteCardBackground}
 								emojiSizePercentage={emojiSizePercentage}
-								cardBack={effectiveCardBack}
 								onPlayerNameChange={(playerId, name) => {
 									handlePlayerNameChange(playerId as 1 | 2, name);
 								}}
@@ -312,7 +310,6 @@ export function AppShell({ model }: { model: AppModel }) {
 						cards={gameState.cards}
 						useWhiteCardBackground={useWhiteCardBackground}
 						emojiSizePercentage={emojiSizePercentage}
-						cardBack={effectiveCardBack}
 					/>
 
 					{/* Background Viewer */}
