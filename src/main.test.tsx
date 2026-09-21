@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	config: vi.fn(),
+	runtime: vi.fn(),
 	init: vi.fn(),
 	register: vi.fn(),
 	start: vi.fn(),
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("./lib/runtimeConfig", () => ({
 	initializeRuntimeConfig: mocks.config,
+	getRuntimeConfig: mocks.runtime,
 }));
 vi.mock("react-dom/client", () => ({
 	createRoot: () => ({ render: mocks.render }),
@@ -26,6 +28,9 @@ vi.mock("./services/telemetry/core", () => ({
 vi.mock("./services/telemetry/clockLifecycle", () => ({
 	startClockCalibration: mocks.clock,
 }));
+vi.mock("./services/telemetry/inputCapture", () => ({
+	startInputCapture: vi.fn(),
+}));
 vi.mock("./services/telemetry/bindStores", () => ({ bindStores: vi.fn() }));
 beforeEach(() => {
 	vi.resetModules();
@@ -34,15 +39,24 @@ beforeEach(() => {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string) => {
-			if (new URL(input).hostname !== "127.0.0.1")
+			if (new URL(input, "http://127.0.0.1").hostname !== "127.0.0.1")
 				throw new Error("Non-loopback request");
+			if (input === "/healthz")
+				return Response.json({
+					status: "ok",
+					commit: __BUILD_INFO__.commitHash,
+					environment: mocks.runtime().environment,
+				});
 			return new Response(
 				JSON.stringify({ auth: {}, firestore: {}, database: {} }),
 			);
 		}),
 	);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(async () => {
+	(await import("./services/updates/buildUpdate")).buildUpdates.stop();
+	vi.unstubAllGlobals();
+});
 it.each([
 	["production", "on", true],
 	["production", "off", false],
@@ -53,6 +67,7 @@ it.each([
 	"boot honors telemetry %s/%s with explicit hosted transport and local isolation",
 	async (environment, telemetry, enabled) => {
 		mocks.config.mockResolvedValue({ environment, telemetry, firebase: null });
+		mocks.runtime.mockReturnValue({ environment, telemetry, firebase: null });
 		await import("./main");
 		await vi.waitFor(() => expect(mocks.render).toHaveBeenCalledTimes(1));
 		expect(mocks.init).toHaveBeenCalledTimes(enabled ? 1 : 0);
@@ -79,6 +94,10 @@ it.each([
 					commit: expect.any(String),
 				}),
 			);
-		if (environment !== "emulator") expect(fetch).not.toHaveBeenCalled();
+		expect(fetch).toHaveBeenCalledWith(
+			"/healthz",
+			expect.objectContaining({ cache: "no-store" }),
+		);
+		expect(fetch).toHaveBeenCalledTimes(environment === "emulator" ? 2 : 1);
 	},
 );

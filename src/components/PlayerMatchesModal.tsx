@@ -1,7 +1,6 @@
 import { useState } from "react";
-import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card, Player } from "../types";
-import { Card as CardComponent } from "./Card";
+import { CardThumbnail } from "./CardThumbnail";
 import { CardGridModal } from "./CardGridModal";
 import { PlayerNameEditModal } from "./PlayerNameEditModal";
 
@@ -12,7 +11,6 @@ interface PlayerMatchesModalProps {
 	cards: Card[];
 	useWhiteCardBackground?: boolean;
 	emojiSizePercentage?: number;
-	cardBack?: CardBackOption;
 	onPlayerNameChange?: (playerId: 1 | 2, newName: string) => void;
 	onPlayerColorChange?: (playerId: 1 | 2, newColor: string) => void;
 	canEditPlayer?: boolean; // Controls whether player editing is allowed (for online mode)
@@ -25,7 +23,6 @@ export const PlayerMatchesModal = ({
 	cards,
 	useWhiteCardBackground = false,
 	emojiSizePercentage = 72,
-	cardBack,
 	onPlayerNameChange,
 	onPlayerColorChange,
 	canEditPlayer = true, // Default to true for backwards compatibility
@@ -97,17 +94,14 @@ export const PlayerMatchesModal = ({
 					onCardClick(index);
 				}}
 				className="cursor-pointer transition-transform hover:scale-110 active:scale-95 border-0 bg-transparent p-0"
+				aria-label={`View ${card.imageId.replaceAll("-", " ")}`}
 				title="Click to view card details"
 			>
-				<CardComponent
+				<CardThumbnail
 					card={card}
-					onClick={() => { }}
 					size={200}
 					useWhiteBackground={useWhiteCardBackground}
 					emojiSizePercentage={emojiSizePercentage}
-					cardBack={cardBack}
-					forceGameplaySize={true}
-					forceGameplayBackground={true}
 				/>
 			</button>
 		</div>
@@ -123,7 +117,6 @@ export const PlayerMatchesModal = ({
 				cards={uniqueCards}
 				useWhiteCardBackground={useWhiteCardBackground}
 				emojiSizePercentage={emojiSizePercentage}
-				cardBack={cardBack}
 				emptyMessage="No matches yet!"
 				renderCard={renderCard}
 			/>

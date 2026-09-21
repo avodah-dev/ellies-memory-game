@@ -24,10 +24,17 @@ import { ReloadConfirmationModal } from "../components/ReloadConfirmationModal";
 import { ResetConfirmationModal } from "../components/ResetConfirmationModal";
 import { SettingsMenu } from "../components/SettingsMenu";
 import type { AppModel } from "../hooks/useAppModel";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useStore } from "zustand";
+import { AppUpdateNotice } from "../components/AppUpdateNotice";
+import { appUpdateStore } from "../stores/appUpdateStore";
+import { buildUpdates } from "../services/updates/buildUpdate";
+import type { OnlineGameState } from "../types";
 import { reloadApp } from "../utils/reloadApp";
 export function AppShell({ model }: { model: AppModel }) {
 	const [isReloading, setIsReloading] = useState(false);
+	const [updateReload, setUpdateReload] = useState(false);
+	const updateError = useStore(appUpdateStore, (s) => s.error);
 	const onlineError = useOnlineStore((s) => s.error);
 	const {
 		backgroundLayerClass,
@@ -81,7 +88,6 @@ export function AppShell({ model }: { model: AppModel }) {
 		selectedPlayerForMatches,
 		players,
 		setSelectedPlayerForMatches,
-		effectiveCardBack,
 		handlePlayerNameChange,
 		updatePlayerColor,
 		gameMode,
@@ -104,7 +110,66 @@ export function AppShell({ model }: { model: AppModel }) {
 		showPWAInstall,
 		handlePWAInstallClose,
 	} = model;
-	if (model.isStandalonePage) return <Outlet />;
+	const round = (gameState as Partial<OnlineGameState>).gameRound ?? 0;
+	useEffect(() => {
+		buildUpdates.boundary(
+			`${gameMode}|${roomCode}|${gameState.gameStatus}|${round}`,
+			{
+				mode: gameMode,
+				game_status: gameState.gameStatus,
+				game_round: round,
+			},
+		);
+	}, [gameMode, roomCode, gameState.gameStatus, round]);
+	const updateSurface = (
+		<>
+			{!showReloadConfirmation && (
+				<AppUpdateNotice
+					onReload={() => {
+						appUpdateStore.setState({ error: null });
+						setUpdateReload(true);
+						setShowReloadConfirmation(true);
+					}}
+				/>
+			)}
+			{/* Reload App Confirmation Modal */}
+			<Modal
+				isOpen={showReloadConfirmation}
+				onClose={() => {
+					if (!isReloading) {
+						setShowReloadConfirmation(false);
+						setUpdateReload(false);
+					}
+				}}
+				title="Reload App"
+			>
+				<ReloadConfirmationModal
+					onCancel={() => {
+						setShowReloadConfirmation(false);
+						setUpdateReload(false);
+					}}
+					isReloading={isReloading}
+					error={updateReload ? updateError : null}
+					onConfirm={async () => {
+						if (isReloading) return;
+						setIsReloading(true);
+						if (updateReload && !(await buildUpdates.prepareReload())) {
+							setIsReloading(false);
+							return;
+						}
+						void reloadApp();
+					}}
+				/>
+			</Modal>
+		</>
+	);
+	if (isStandalonePage)
+		return (
+			<>
+				<Outlet />
+				{updateSurface}
+			</>
+		);
 	return (
 		<>
 			{/* Background layer - blurred during gameplay */}
@@ -258,25 +323,6 @@ export function AppShell({ model }: { model: AppModel }) {
 						/>
 					</Modal>
 
-					{/* Reload App Confirmation Modal */}
-					<Modal
-						isOpen={showReloadConfirmation}
-						onClose={() => {
-							if (!isReloading) setShowReloadConfirmation(false);
-						}}
-						title="Reload App"
-					>
-						<ReloadConfirmationModal
-							onCancel={() => setShowReloadConfirmation(false)}
-							isReloading={isReloading}
-							onConfirm={() => {
-								if (isReloading) return;
-								setIsReloading(true);
-								void reloadApp();
-							}}
-						/>
-					</Modal>
-
 					{/* Player Matches Modal */}
 					{selectedPlayerForMatches !== null &&
 						players[selectedPlayerForMatches - 1] && (
@@ -287,7 +333,6 @@ export function AppShell({ model }: { model: AppModel }) {
 								cards={gameState.cards}
 								useWhiteCardBackground={useWhiteCardBackground}
 								emojiSizePercentage={emojiSizePercentage}
-								cardBack={effectiveCardBack}
 								onPlayerNameChange={(playerId, name) => {
 									handlePlayerNameChange(playerId as 1 | 2, name);
 								}}
@@ -312,7 +357,6 @@ export function AppShell({ model }: { model: AppModel }) {
 						cards={gameState.cards}
 						useWhiteCardBackground={useWhiteCardBackground}
 						emojiSizePercentage={emojiSizePercentage}
-						cardBack={effectiveCardBack}
 					/>
 
 					{/* Background Viewer */}
@@ -368,6 +412,7 @@ export function AppShell({ model }: { model: AppModel }) {
 					/>
 				</div>
 			</div>
+			{updateSurface}
 		</>
 	);
 }

@@ -104,13 +104,14 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 | --- | --- |
 | `mm.conn.input` | `source`: browser/rtdb/opponent; `value`; round/revision. `observation='signal'` identifies raw callbacks; an absent/null `observation` identifies a full state snapshot. Layout effect runs and each new round/status record all three current inputs even if unchanged. Neither callback nor snapshot counts equal connection transitions. |
 | `mm.conn.ready` | `ready`, `browser_online`, `rtdb_connected`, `opponent_connected`. Reports the committed composite; it does not participate in readiness. |
+| `mm.input.capture` | Document-level pointerdown/touchstart target and hit-test classification, native IDs, `card_handler_ran`, `handler_card_id`, `gesture_id`, `capture_mono_ms`, `ms_capture_work`, `ms_dispatch_to_report`, `capture_dropped_total`. See capture contract below. |
 | `mm.input.pointer` | `card_id`, `phase`: down/up/cancel, `pointer_type`, `pointer_id`, `gesture_id`. Raw observations. Touch/pen and primary-button mouse activate on down (including non-primary touch contacts); keyboard/assistive activation stays on click. No preventDefault, capture, propagation or touch-action changes. |
 | `mm.input.activation` | `card_id`, `input_id`, `gesture_id`, `pointer_type`, `source`: pointerdown/click. Exactly one event per attempted activation; game guards can still reject it. This starts same-device input latency. |
 | `mm.input.click` | Raw clicks including suppressed pointer duplicates. `activation_suppressed`, `association`: pointer-id/released-contact/ambiguous/none, native `pointer_id`, `native_pointer_type`, `detail`, resolved `pointer_type`, `gesture_id`, `input_id`, `ms_down_to_click`. Associated duplicates retain the down activation ID; unknown/ambiguous duplicates have null IDs and never create another activation. Keyboard/unmatched/cancelled gestures have null pointer latency. |
 | `mm.game.flip` | `result`: accepted/paused/not-ready/not-your-turn/checking-match/not-playing/two-selected/missing-card/already-flipped/already-matched. Also `paused`, `online_ready`, `checking_match`, `local_slot`, `mode`, and the state being evaluated. Gate precedence follows the existing application branches. |
 | `mm.game.state` | `phase='committed'`, mode, local slot, online readiness and game status. Both local and online controllers exist; filter `mode='online'` for room diagnosis. |
 | `mm.game.endturn` | accepted/paused/not-ready/not-your-turn. |
-| `mm.game.match` | match/mismatch/lost-authority/missing-selected. |
+| `mm.game.match` | match/mismatch/lost-authority/missing-selected. Resolved pairs include `trigger`: timer or next-card. |
 | `mm.game.finish_check` | `matched_count`, `card_count`, `finished`, game status. Emitted immediately after the active `checkAndFinishGame(applyMatch(...))` path, before applying/synchronizing the final state. |
 | `mm.game.match_timer` | `timer_id`, scheduled/fired/cancelled, `delay_ms`, `ms_elapsed`, cancellation reason. Covers effect cleanup and cancellation by synchronization, reset, initialization and end-turn. Cleanup after firing is not a cancellation. |
 | `mm.nav.results_timer` | Same timer fields, plus navigation-resolved/navigation-rejected. Observes the existing 1200 ms effect, with unchanged dependencies. |
@@ -461,7 +462,9 @@ Run lobby and mid-game tests on both real devices for the baseline. Synthetic br
 
 This joins mm.input.activation to its successful write and the other device's first paint opportunity. Touch/pen and primary-button mouse start at down; keyboard/assistive input starts at click. It uses neither client wall time nor writer acknowledgement as its start. The paint probe estimates a browser paint opportunity, not physical display pixels.
 
-For the pre-fix EUSG baseline on cecc356, explicitly substitute event = 'mm.input.click' for event = 'mm.input.activation' below; that build had click-only activation. Run each build/room separately, label the start event, and report missing intended actions separately. Do not compare pointer-down start with the old click start as if they were identical: for a contact-to-paint comparison, join the baseline click's gesture_id back to its down in the same device/session, excluding ambiguous links. The post-fix raw click stream includes suppressed duplicates and must not be used as the latency origin. This changed activation query needs preview-data validation; prior SQL confirmations apply to the earlier click query.
+For the pre-fix EUSG baseline on cecc356, explicitly substitute event = 'mm.input.click' for event = 'mm.input.activation' below; that build had click-only activation. Run each build/room separately, label the start event, and report missing intended actions separately. Do not compare pointer-down start with the old click start as if they were identical: for a contact-to-paint comparison, join the baseline click's gesture_id back to its down in the same device/session, excluding ambiguous links. The post-fix raw click stream includes suppressed duplicates and must not be used as the latency origin. The activation query was validated on preview RLPZ/c964f60; the flip-context filter below needs validation when the match-only next-card change reaches preview.
+
+A next-card activation can resolve a matching pair and then flip the new card in one input task. Both writes retain that input ID but have distinct revisions and contexts. Filter successful writes to `context LIKE 'flip:%'` to measure the requested flip once; do not count `match:complete` as another activation. `mm.game.match.trigger` distinguishes `timer` from `next-card`, and early timer cancellation uses reason `next-card`. Mismatches keep the full reveal and reject third taps.
 
 The 100 ms endpoint-uncertainty cap is an explicit analysis choice. Inspect calibration coverage and excluded counts separately; absence is not zero latency. Report lower/upper intervals, with the clock-rate/precision assumptions in the clock contract, alongside the midpoint estimate.
 
@@ -493,6 +496,7 @@ JOIN (
     WHERE timestamp > now() - INTERVAL 7 DAY
       AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
       AND properties.ok = true AND properties.input_id IS NOT NULL
+      AND properties.context LIKE 'flip:%'
 ) AS w ON i.device = w.device AND i.session = w.session AND i.input = w.input
 JOIN (
     SELECT properties.device_id AS device, properties.page_session_id AS session,
@@ -548,3 +552,32 @@ Input behavior does not depend on telemetry. Each card owns bounded contact book
 The Connection Test's touch probes remain raw browser-click probes. Their both_clicked_pairs score can still be low on iOS after game activation is fixed; measure game mm.input.activation → mm.game.flip instead. Browser tests inject simultaneous PointerEvents in Chromium and WebKit to verify real app handlers; they do not simulate iOS hardware click synthesis. Physical iPad PWA preview acceptance is required before production.
 
 Preview builds: 6ce6532 (PR #17) activates touch/pen on press, mouse on click. The mouse follow-up activates primary-button mouse on press too; release clicks cannot retry a rejected press. EUSG down-to-click delay was median 90 ms / p95 127 ms on iPad and 143 / 232 ms on MacBook; removing that delay is an input change, not a network improvement. Both devices must accept the combined preview before production.
+
+## Missing-contact capture and flying-card hit testing
+
+`mm.input.capture` observes document capture-phase `pointerdown` and `touchstart` while either gameplay route is active, including events that land on an overlay instead of a card. It records `target_tag`/`target_card_id`, `hit_tag`/`hit_card_id` from `elementFromPoint`, board/dialog/flying/disabled flags, native pointer/touch identity, active touch count, `is_trusted`, and cancellation before/after propagation. It does not upload coordinates, DOM text, names, images, or arbitrary selectors.
+
+`card_handler_ran` and `handler_card_id` report whether the actual Card handler received that native event. Pointer records also carry `gesture_id`, which joins `mm.input.pointer`/`mm.input.activation` in the same device and page session. Touchstart has its own record-only Card handler and does not activate or infer a link to a pointerdown. Both false and true delivery are retained. Finalization uses a task after dispatch because native browser events may run microtasks between capture and React handlers. `capture_mono_ms` is the observation time; `ms_dispatch_to_report` explains the later record timestamp. Do not use this event as the activation-to-paint origin.
+
+The observer is passive, follows the telemetry kill switch, and never changes activation, focus, gestures or propagation. It adds bounded hit-testing (one per changed contact, at most ten) and reports its cost as `ms_capture_work`. The Card hot path adds one WeakMap lookup. At most64 reports may await dispatch completion; `capture_dropped_total` exposes overflow. The ordinary telemetry buffer/sink health still applies. No observer network requests are made; emulator output remains local.
+
+Interpretation:
+
+- A target/hit on a flying or disabled card when the intended card is underneath identifies an interception path.
+- A document pointerdown aimed at a card with `card_handler_ran=false` identifies loss between document capture and the Card handler.
+- A touchstart without a corresponding pointerdown shows the browser delivered a TouchEvent but not the expected pointer event; use native IDs/timing cautiously rather than inventing associations.
+- If neither document event exists, JavaScript cannot prove a physical contact happened. Correlate the user's recording and device/browser version; absence is not an app-level rejection.
+
+Local reproduction: native WebKit hit testing found matched-card flight overlays covering other playable card centers around42–358ms into flight. A native-input regression failed on Chromium and WebKit before the correction: the underlying card remained face-down. Flying wrappers now exclude pointer events and Card inherits that policy, so children cannot re-enable interception. Visual animation and game timing are unchanged. The same regression passes after the correction.
+
+This establishes a real overlay defect, not that every reported staggered iPad tap has the same cause. Native WebKit sequential taps at60/100/150/200/250/300ms and injected overlapping contacts passed even before this fix; sampled neighboring hit targets during an isolated first-card flip were unobstructed. Chromium native overlapping/just-released contacts also passed. Playwright WebKit only exposes complete native taps, so its overlapping-contact test uses injected PointerEvents through real elementFromPoint hit-testing, not iOS gesture recognition. Physical PWA acceptance remains needed. The removed preventDefault behavior is still a hypothesis and is unchanged in this candidate.
+
+## Build-change notices and explicit reloads
+
+`mm.app.update` records `phase`, `running_commit`, `offered_commit`, and the check `trigger`. Game-boundary context includes mode, status and round. Phases are mismatch-seen, prompt-shown, deferred, check-failed (explicit reload only), reload-requested, receipt-unavailable, and reload-outcome. Mismatch discovery is deduplicated per offered revision in a bounded page-session history; polling a rolling release does not produce a new discovery every minute. Prompt events also identify user expansion and reminders at a new game boundary.
+
+The app checks its own uncached `/healthz` at visible boot, visibility/pageshow resume, browser-online recovery, game boundaries and every 60 seconds while visible. Checks coalesce, have a five-second hard deadline, and never wait on or alter game input, synchronization or Firebase state. A failed or invalid check does not remove an existing update notice. A different valid hash can represent an update or a rollback; hashes do not establish ordering. The Vite health endpoint reads the built revision from `build-info.json` for preview, so it describes the served bundle rather than the checkout's later HEAD.
+
+Reload is always explicit and uses the existing confirmation/cache cleanup flow. It rechecks the served revision before navigation. A sessionStorage receipt (one entry, validated hashes, one-hour expiry) is consumed on the next boot and reports target-loaded, previous-build-loaded or different-build-loaded by comparing the actual compiled revision. It never infers success from the click. Storage being unavailable does not prevent an explicitly requested reload, but its receipt cannot be verified. Old bundles cannot gain the detector until reloaded once. Nothing automatically reloads an active game.
+
+Local browser tests change only loopback health responses and fire real lifecycle events; their reload deliberately reports previous-build-loaded because the served bundle itself did not change. A real preview revision-change rehearsal with an already-open detector-equipped client is still required before deployment readiness; the current preview must remain unchanged until Nathan completes the rapid-tap test.

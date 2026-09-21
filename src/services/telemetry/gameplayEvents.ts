@@ -10,6 +10,11 @@ export interface Detail extends Partial<StateFields> {
 	[key: string]: Scalar | undefined;
 }
 export interface GameplayEvents {
+	"mm.input.capture": Detail & {
+		event_type: string;
+		capture_id: string;
+		card_handler_ran: boolean;
+	};
 	"mm.input.activation": Detail & {
 		card_id: string;
 		input_id: string;
