@@ -388,7 +388,7 @@ export const GameBoard = ({
 				return (
 					<div
 						key={`flying-${cardId}`}
-						className="fixed z-50 card-fly-to-player"
+						className="fixed z-50 card-fly-to-player pointer-events-none"
 						onAnimationEnd={() => handleFlyingCardAnimationEnd(cardId)}
 						style={
 							{
