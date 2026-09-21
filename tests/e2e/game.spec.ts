@@ -316,6 +316,129 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 		8,
 	);
 });
+test("two simultaneous touch contacts flip on down once, then mouse and keyboard still work", async ({
+	page,
+}) => {
+	await home(page);
+	await page.getByRole("button", { name: /Same Device Play/ }).click();
+	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
+	await page.getByRole("button", { name: "4 4×2 Easy" }).click();
+	await page
+		.getByRole("button", { name: "🎮 Start Game", exact: true })
+		.click();
+	await expect(page).toHaveURL(/\/local\/game$/);
+	// Dispatch both downs in one task. WebKit exposes no public multi-touch
+	// injection API; this tests real React/game handlers, not OS click synthesis.
+	await page.evaluate(() => {
+		for (const [index, id] of [0, 2].entries()) {
+			const target = document.querySelector(
+				'main button[data-card-id="card-' + id + '"]',
+			)!;
+			target.dispatchEvent(
+				new PointerEvent("pointerdown", {
+					bubbles: true,
+					pointerId: index + 10,
+					pointerType: "touch",
+					isPrimary: index === 0,
+					button: 0,
+					clientX: 10,
+					clientY: 20,
+				}),
+			);
+		}
+	});
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await page.evaluate(() => {
+		for (const [index, id] of [2, 0].entries()) {
+			const target = document.querySelector(
+				'main button[data-card-id="card-' + id + '"]',
+			)!;
+			target.dispatchEvent(
+				new PointerEvent("pointerup", {
+					bubbles: true,
+					pointerId: index === 0 ? 11 : 10,
+					pointerType: "touch",
+					button: 0,
+					clientX: 10,
+					clientY: 20,
+				}),
+			);
+			// Explicit MouseEvent exercises WebKit's ID-less compatibility click path.
+			target.dispatchEvent(
+				new MouseEvent("click", {
+					bubbles: true,
+					detail: 1,
+					clientX: 10,
+					clientY: 20,
+				}),
+			);
+		}
+	});
+	await expect
+		.poll(
+			async () =>
+				(await diagnostics(page)).filter(
+					(row) => row.message === "mm.game.flip",
+				).length,
+		)
+		.toBe(2);
+	await expect
+		.poll(
+			async () =>
+				(await diagnostics(page)).filter(
+					(row) =>
+						row.message === "mm.input.click" &&
+						row.context.activation_suppressed === true,
+				).length,
+		)
+		.toBe(2);
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "false");
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "false");
+	await card(page, 0).click(); // real mouse sequence replaces last touch identity
+	await card(page, 1).focus();
+	await page.keyboard.press("Space");
+	await expect(card(page, 0)).toHaveCount(0);
+	await expect
+		.poll(
+			async () =>
+				(await diagnostics(page)).filter(
+					(row) => row.message === "mm.game.flip",
+				).length,
+		)
+		.toBe(4);
+	const activations = (await diagnostics(page)).filter(
+		(row) => row.message === "mm.input.activation",
+	);
+	expect(activations.map((row) => row.context.source)).toEqual([
+		"pointerdown",
+		"pointerdown",
+		"click",
+		"click",
+	]);
+	expect(new Set(activations.map((row) => row.context.input_id)).size).toBe(4);
+	if (test.info().project.name === "webkit") {
+		await card(page, 2).tap();
+		await card(page, 3).tap();
+		await expect(card(page, 2)).toHaveCount(0);
+		await expect
+			.poll(
+				async () =>
+					(await diagnostics(page)).filter(
+						(row) => row.message === "mm.game.flip",
+					).length,
+			)
+			.toBe(6);
+		const native = (await diagnostics(page))
+			.filter((row) => row.message === "mm.input.activation")
+			.slice(-2);
+		expect(native.map((row) => row.context.source)).toEqual([
+			"pointerdown",
+			"pointerdown",
+		]);
+	}
+});
+
 test("named players start a 16-pair Thanksgiving game with strict rules", async ({
 	browser,
 	page: host,
