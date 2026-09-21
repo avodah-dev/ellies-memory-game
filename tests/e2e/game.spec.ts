@@ -1112,4 +1112,13 @@ test("a served build change offers an explicit reload without interrupting play"
 	// Only health was simulated: the same actual bundle loaded. Do not claim the
 	// offered build was installed; the receipt must report that exact outcome.
 	await expect.poll(async () => (await diagnostics(page)).some(row => row.message === "mm.app.update" && row.context.phase === "reload-outcome" && row.context.outcome === "previous-build-loaded")).toBe(true);
+	// Bookmarkable standalone routes keep the same actionable update surface.
+	for (const path of ["/privacy", "/terms"]) {
+		await page.goto(path);
+		await expect(notice).toBeVisible();
+		await notice.getByRole("button", { name: "Reload", exact: true }).click();
+		await expect(page.getByRole("button", { name: "Clear Cache & Reload" })).toBeVisible();
+		await page.getByRole("button", { name: "Cancel", exact: true }).click();
+		await expect(page).toHaveURL(new RegExp(path + "$"));
+	}
 });

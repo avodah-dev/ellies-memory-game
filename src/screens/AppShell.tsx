@@ -121,8 +121,7 @@ export function AppShell({ model }: { model: AppModel }) {
 			},
 		);
 	}, [gameMode, roomCode, gameState.gameStatus, round]);
-	if (model.isStandalonePage) return <Outlet />;
-	return (
+	const updateSurface = (
 		<>
 			{!showReloadConfirmation && (
 				<AppUpdateNotice
@@ -133,6 +132,46 @@ export function AppShell({ model }: { model: AppModel }) {
 					}}
 				/>
 			)}
+			{/* Reload App Confirmation Modal */}
+			<Modal
+				isOpen={showReloadConfirmation}
+				onClose={() => {
+					if (!isReloading) {
+						setShowReloadConfirmation(false);
+						setUpdateReload(false);
+					}
+				}}
+				title="Reload App"
+			>
+				<ReloadConfirmationModal
+					onCancel={() => {
+						setShowReloadConfirmation(false);
+						setUpdateReload(false);
+					}}
+					isReloading={isReloading}
+					error={updateReload ? updateError : null}
+					onConfirm={async () => {
+						if (isReloading) return;
+						setIsReloading(true);
+						if (updateReload && !(await buildUpdates.prepareReload())) {
+							setIsReloading(false);
+							return;
+						}
+						void reloadApp();
+					}}
+				/>
+			</Modal>
+		</>
+	);
+	if (isStandalonePage)
+		return (
+			<>
+				<Outlet />
+				{updateSurface}
+			</>
+		);
+	return (
+		<>
 			{/* Background layer - blurred during gameplay */}
 			{/* Extended beyond viewport (-8) to hide blur edge artifacts */}
 			<div
@@ -284,36 +323,6 @@ export function AppShell({ model }: { model: AppModel }) {
 						/>
 					</Modal>
 
-					{/* Reload App Confirmation Modal */}
-					<Modal
-						isOpen={showReloadConfirmation}
-						onClose={() => {
-							if (!isReloading) {
-								setShowReloadConfirmation(false);
-								setUpdateReload(false);
-							}
-						}}
-						title="Reload App"
-					>
-						<ReloadConfirmationModal
-							onCancel={() => {
-								setShowReloadConfirmation(false);
-								setUpdateReload(false);
-							}}
-							isReloading={isReloading}
-							error={updateReload ? updateError : null}
-							onConfirm={async () => {
-								if (isReloading) return;
-								setIsReloading(true);
-								if (updateReload && !(await buildUpdates.prepareReload())) {
-									setIsReloading(false);
-									return;
-								}
-								void reloadApp();
-							}}
-						/>
-					</Modal>
-
 					{/* Player Matches Modal */}
 					{selectedPlayerForMatches !== null &&
 						players[selectedPlayerForMatches - 1] && (
@@ -403,6 +412,7 @@ export function AppShell({ model }: { model: AppModel }) {
 					/>
 				</div>
 			</div>
+			{updateSurface}
 		</>
 	);
 }
