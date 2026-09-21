@@ -4,6 +4,12 @@ inputs:
   full:
     description: Install browser, emulator, and Docker tools for full verification
     required: true
+  browsers:
+    description: Install browser binaries and OS libraries
+    default: 'true'
+  docker:
+    description: Set up the cached Docker builder
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -29,16 +35,16 @@ runs:
       with:
         path: ~/.cache/firebase/emulators
         key: firebase-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
-    - if: inputs.full == 'true'
+    - if: inputs.full == 'true' && inputs.browsers == 'true'
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ~/.cache/ms-playwright
         key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
-    - if: inputs.full == 'true'
+    - if: inputs.full == 'true' && inputs.browsers == 'true'
       shell: bash
       # Always install OS libraries; Playwright reuses exact cached browser versions.
       run: bunx playwright install --with-deps chromium webkit
-    - if: inputs.full == 'true'
+    - if: inputs.full == 'true' && inputs.docker == 'true'
       uses: useblacksmith/setup-docker-builder@5fe3b77775f1dd55595beb998036fe1f2cf47118
       with:
         nofallback: true
