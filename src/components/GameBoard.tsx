@@ -97,8 +97,13 @@ export const GameBoard = ({
 		new Map(),
 	);
 
-	// Track previous matched state to detect match transitions
-	const prevMatchedRef = useRef<Set<string>>(new Set());
+	// Only animate transitions observed by this mounted board, not old matches
+	// already present when joining or returning to a game.
+	const prevMatchedRef = useRef<Set<string> | null>(null);
+	if (prevMatchedRef.current === null)
+		prevMatchedRef.current = new Set(
+			cards.filter((c) => c.isMatched).map((c) => c.id),
+		);
 
 	// Cache card positions when they get flipped - used to calculate fly data
 	const cardPositionCache = useRef<Map<string, CachedCardPosition>>(new Map());
@@ -254,7 +259,7 @@ export const GameBoard = ({
 		const currentMatched = new Set(
 			cards.filter((c) => c.isMatched).map((c) => c.id),
 		);
-		const prevMatched = prevMatchedRef.current;
+		const prevMatched = prevMatchedRef.current!; // Initialized during render.
 
 		// Find newly matched cards (cards that just transitioned to isMatched: true)
 		const newlyMatched: CardType[] = [];
