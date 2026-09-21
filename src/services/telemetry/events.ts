@@ -12,6 +12,7 @@ export interface EventProps extends GameplayEvents {
 	"mm.conntest.done": Record<string, string | number | boolean | null>;
 	"mm.session.start": Record<string, string | number | boolean | null>;
 	"mm.app.boot": { phase: string; ms_elapsed: number };
+	"mm.app.update": Record<string, string | number | boolean | null>;
 	"mm.app.error": {
 		source: "error" | "unhandledrejection";
 		error_type: string;

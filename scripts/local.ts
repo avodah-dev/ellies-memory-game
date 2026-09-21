@@ -138,10 +138,13 @@ try {
 	validatePorts();
 	for (const port of Object.values(ports)) await assertFree(port);
 	if (mode !== "dev") {
+		// Release verifies both Vite and the container. Keep each browser test's
+		// own timeout unchanged while budgeting for the expanded two-pass suite.
+		const timeoutMinutes = mode === "release" ? 12 : 10;
 		deadline = setTimeout(() => {
-			console.error("Local verification exceeded 10 minutes");
+			console.error(`Local verification exceeded ${timeoutMinutes} minutes`);
 			void stop().then(() => process.exit(1));
-		}, 600000);
+		}, timeoutMinutes * 60_000);
 		await wait(launch("bun", ["run", "check"]));
 		await wait(launch("bun", ["run", "test:ingest-runtime"]));
 	}

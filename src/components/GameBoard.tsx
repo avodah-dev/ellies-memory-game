@@ -97,8 +97,13 @@ export const GameBoard = ({
 		new Map(),
 	);
 
-	// Track previous matched state to detect match transitions
-	const prevMatchedRef = useRef<Set<string>>(new Set());
+	// Only animate transitions observed by this mounted board, not old matches
+	// already present when joining or returning to a game.
+	const prevMatchedRef = useRef<Set<string> | null>(null);
+	if (prevMatchedRef.current === null)
+		prevMatchedRef.current = new Set(
+			cards.filter((c) => c.isMatched).map((c) => c.id),
+		);
 
 	// Cache card positions when they get flipped - used to calculate fly data
 	const cardPositionCache = useRef<Map<string, CachedCardPosition>>(new Map());
@@ -254,7 +259,7 @@ export const GameBoard = ({
 		const currentMatched = new Set(
 			cards.filter((c) => c.isMatched).map((c) => c.id),
 		);
-		const prevMatched = prevMatchedRef.current;
+		const prevMatched = prevMatchedRef.current!; // Initialized during render.
 
 		// Find newly matched cards (cards that just transitioned to isMatched: true)
 		const newlyMatched: CardType[] = [];
@@ -453,6 +458,12 @@ export const GameBoard = ({
 				)}
 
 				{cards.map((card, index) => {
+					// Keep the grid cell measurable after a match too. An immediate
+					// next-card press can batch away the intermediate selected render.
+					const rememberCell = (el: HTMLDivElement | null) => {
+						if (el) cardRefs.current.set(card.id, el);
+						else cardRefs.current.delete(card.id);
+					};
 					// Show placeholder for matched cards OR cards currently flying (local state)
 					const isFlying = flyingCards.has(card.id);
 					const shouldShowPlaceholder = card.isMatched || isFlying;
@@ -471,6 +482,7 @@ export const GameBoard = ({
 						// Placeholder for matched cards (or cards that are flying)
 						<div
 							key={card.id}
+							ref={rememberCell}
 							className="rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 opacity-15"
 							style={{
 								width: `${cardSize}px`,
@@ -480,13 +492,7 @@ export const GameBoard = ({
 					) : (
 						<div
 							key={card.id}
-							ref={(el) => {
-								if (el) {
-									cardRefs.current.set(card.id, el);
-								} else {
-									cardRefs.current.delete(card.id);
-								}
-							}}
+							ref={rememberCell}
 							className={isAnimating ? "card-fly-in" : ""}
 							style={
 								{

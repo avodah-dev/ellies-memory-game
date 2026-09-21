@@ -305,16 +305,61 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 	await page.keyboard.press("Enter");
 	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
 	await card(page, 1).click();
+	await card(page, 2).click();
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await expect(page.locator(".card-fly-to-player")).toHaveCount(2);
 	await expect(card(page, 0)).toHaveCount(0);
-	for (const id of [2, 4, 6]) await match(page, id);
+	// Preview actions must remain native buttons even when their artwork is matched.
+	await page.getByRole("button", { name: "1", exact: true }).click();
+	await expect(page.getByRole("heading", { name: "Player 1's Matches" })).toBeVisible();
+	const preview = page.getByRole("dialog").getByTitle("Click to view card details").first();
+	const tapPreview = async () => {
+		const box = await preview.boundingBox();
+		if (!box) throw Error("Missing card preview button");
+		if (test.info().project.name === "webkit")
+			await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+		else await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+		await expect(page.getByRole("button", { name: "Close lightbox", exact: true })).toBeVisible();
+		await expect(page.getByRole("region", { name: "Card display" })).toBeVisible();
+	};
+	await tapPreview();
+	await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
+	await expect(preview.locator("button")).toHaveCount(0);
+	for (const key of ["Enter", "Space"]) {
+		await preview.focus();
+		await page.keyboard.press(key);
+		await expect(page.getByRole("button", { name: "Close lightbox", exact: true })).toBeVisible();
+		await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
+	}
+	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
+	await card(page, 3).click();
+	await expect(card(page, 2)).toHaveCount(0);
+	for (const id of [4, 6]) await match(page, id);
 	await expect(page).toHaveURL(/\/game-over$/);
 	await expect(page.getByText(/wins/i).first()).toBeVisible();
+	await page.getByRole("button", { name: "Explore All Cards", exact: true }).click();
+	await tapPreview();
+	await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
+	await expect(page.getByRole("dialog").locator("button button")).toHaveCount(0);
+	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
 	await page.getByRole("button", { name: /play again/i }).click();
 	await page.getByRole("button", { name: /replay/i }).click();
 	await expect(page).toHaveURL(/\/local\/game$/);
 	await expect(page.locator("main button[data-card-id]:enabled")).toHaveCount(
 		8,
 	);
+	// All three contacts can be batched before a selected-card render. The
+	// matched pair must still have geometry for its flight from the grid.
+	await page.getByRole("application", { name: "Game board" }).evaluate(async (board) => {
+		await Promise.allSettled(board.getAnimations({ subtree: true }).map(a => a.finished));
+	});
+	await page.addStyleTag({ content: ".card-fly-to-player { animation-play-state: paused !important; }" });
+	await page.evaluate(() => {
+		for (const id of [0, 1, 2]) document.querySelector(`main button[data-card-id="card-${id}"]`)!
+			.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: id + 10, pointerType: "touch", button: 0 }));
+	});
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await expect(page.locator(".card-fly-to-player")).toHaveCount(2);
 });
 test("two simultaneous touch contacts flip on down once, then mouse and keyboard still work", async ({
 	page,
@@ -788,8 +833,21 @@ test("named players start a 16-pair Thanksgiving game with strict rules", async 
 		await card(host, 0).click();
 		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
 		await card(host, 1).click();
+		await card(host, 2).click();
+		await expect(card(host, 2)).toHaveAttribute("aria-pressed", "true");
+		await expect(host.locator(".card-fly-to-player")).toHaveCount(2);
 		await expect(card(host, 0)).toHaveCount(0);
 		await expect(card(guest, 0)).toHaveCount(0);
+		await expect(card(guest, 2)).toHaveAttribute("aria-pressed", "true");
+		await expect.poll(async () => {
+			const rows = await diagnostics(host);
+			const resolution = rows.find(r => r.message === "mm.game.match" && r.context.trigger === "next-card");
+			const writes = rows.filter(r => r.message === "mm.sync.write.result" && r.context.ok === true);
+			const matchWrite = writes.find(r => r.context.context === "match:complete");
+			const flipWrite = writes.find(r => r.context.context === "flip:card-2");
+			return Boolean(resolution && matchWrite && flipWrite &&
+				Number(flipWrite.context.sync_version) === Number(matchWrite.context.sync_version) + 1);
+		}).toBe(true);
 	} finally {
 		await guestContext.close();
 	}
@@ -1006,5 +1064,61 @@ test("Connection Test completes in the lobby and does not disconnect an active g
 		).toHaveCount(0);
 	} finally {
 		await guestContext.close();
+	}
+});
+
+test("a served build change offers an explicit reload without interrupting play", async ({ page, context }) => {
+	await localRequestsOnly(context);
+	await home(page);
+	await page.getByRole("button", { name: /Same Device Play/ }).click();
+	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
+	await page.getByRole("button", { name: "4 4×2 Easy" }).click();
+	await page.getByRole("button", { name: "🎮 Start Game", exact: true }).click();
+	await expect(page).toHaveURL(/\/local\/game$/);
+	const device = await page.evaluate(() => {
+		localStorage.setItem("update-saved-setting", "keep-me");
+		return localStorage.getItem("matchimus-device-id");
+	});
+	let healthy = true;
+	await context.route("**/healthz", route => route.fulfill({ status: healthy ? 200 : 503, contentType: "application/json", body: JSON.stringify({ status: "ok", commit: "b".repeat(40), environment: "emulator" }) }));
+	// Exercise the real registered lifecycle trigger with a changed same-origin response.
+	await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+	const notice = page.getByRole("complementary", { name: "App update" });
+	await expect(notice).toBeVisible();
+	await card(page, 0).click();
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
+	await notice.getByRole("button", { name: "Reload", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Clear Cache & Reload" })).toBeVisible();
+	await page.getByRole("button", { name: "Cancel", exact: true }).click();
+	await expect(page).toHaveURL(/\/local\/game$/);
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
+	await notice.getByRole("button", { name: "Later", exact: true }).click();
+	await expect(notice.getByRole("button", { name: "Update available", exact: true })).toBeVisible();
+	await card(page, 1).click();
+	await expect(card(page, 0)).toHaveCount(0);
+	for (const id of [2, 4, 6]) await match(page, id);
+	await expect(page).toHaveURL(/\/game-over$/);
+	await expect(notice.getByRole("button", { name: "Later", exact: true })).toBeVisible();
+	await notice.getByRole("button", { name: "Reload", exact: true }).click();
+	healthy = false;
+	await page.getByRole("button", { name: "Clear Cache & Reload", exact: true }).click();
+	await expect(page.getByRole("alert")).toHaveText("Could not check the update. Check your connection and try again.");
+	await expect(page).toHaveURL(/\/game-over$/);
+	healthy = true;
+	await page.getByRole("button", { name: "Clear Cache & Reload", exact: true }).click();
+	await expect(page.getByRole("button", { name: /Play Online Challenge/ })).toBeVisible();
+	await expect(page).toHaveURL(test.info().project.use.baseURL + "/");
+	expect(await page.evaluate(() => [localStorage.getItem("update-saved-setting"), localStorage.getItem("matchimus-device-id")])).toEqual(["keep-me", device]);
+	// Only health was simulated: the same actual bundle loaded. Do not claim the
+	// offered build was installed; the receipt must report that exact outcome.
+	await expect.poll(async () => (await diagnostics(page)).some(row => row.message === "mm.app.update" && row.context.phase === "reload-outcome" && row.context.outcome === "previous-build-loaded")).toBe(true);
+	// Bookmarkable standalone routes keep the same actionable update surface.
+	for (const path of ["/privacy", "/terms"]) {
+		await page.goto(path);
+		await expect(notice).toBeVisible();
+		await notice.getByRole("button", { name: "Reload", exact: true }).click();
+		await expect(page.getByRole("button", { name: "Clear Cache & Reload" })).toBeVisible();
+		await page.getByRole("button", { name: "Cancel", exact: true }).click();
+		await expect(page).toHaveURL(new RegExp(path + "$"));
 	}
 });

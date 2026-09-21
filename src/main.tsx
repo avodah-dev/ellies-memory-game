@@ -14,6 +14,7 @@ import {
 	getPageSessionId,
 } from "./services/telemetry/identity";
 import { POSTHOG_PROJECT_TOKEN } from "./services/telemetry/sinks";
+import { buildUpdates } from "./services/updates/buildUpdate";
 
 async function main() {
 	const bootStart = performance.now();
@@ -37,6 +38,8 @@ async function main() {
 		}
 	}
 	startTelemetry(config);
+	buildUpdates.start();
+	if (import.meta.hot) import.meta.hot.dispose(() => buildUpdates.stop());
 	startInputCapture(config);
 	track("mm.app.boot", {
 		phase: "runtime-ready",
