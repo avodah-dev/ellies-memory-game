@@ -46,6 +46,20 @@ export function validateImage(info, manifest) {
 }
 const inspect = () => JSON.parse(command('docker', ['image', 'inspect', image]))[0];
 
+export function assertVerificationResults(docs, results) {
+  assert.equal(results.checks, 'success', 'Checks lane must succeed');
+  for (const lane of ['vite', 'container']) {
+    assert.equal(results[lane], docs ? 'skipped' : 'success', `${lane} lane has an unexpected result`);
+  }
+}
+
+async function validateArchive(directory, tree, commit) {
+  const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'));
+  validateManifest(manifest, tree, commit);
+  assert.equal(await archiveHash(join(directory, 'image.tar.gz')), manifest.archiveSha256, 'Image archive checksum mismatch');
+  return manifest;
+}
+
 async function main(mode) {
   const tree = git('rev-parse', 'HEAD^{tree}');
   const commit = git('rev-parse', 'HEAD');
@@ -62,9 +76,24 @@ async function main(mode) {
     await output('docs_only', docs);
     return;
   }
-  assert.ok(directory, 'VERIFIED_IMAGE_DIR is required');
-  await mkdir(directory, { recursive: true });
-  const archive = join(directory, 'image.tar.gz');
+  if (mode === 'gate') {
+    assert.ok(['true', 'false'].includes(process.env.DOCS_ONLY), 'Explicit docs classification required');
+    assertVerificationResults(process.env.DOCS_ONLY === 'true', {
+      checks: process.env.CHECKS_RESULT, vite: process.env.VITE_RESULT, container: process.env.CONTAINER_RESULT,
+    });
+    return;
+  }
+  if (mode !== 'find') assert.ok(directory, 'VERIFIED_IMAGE_DIR is required');
+  if (directory) await mkdir(directory, { recursive: true });
+  const archive = directory ? join(directory, 'image.tar.gz') : undefined;
+  if (mode === 'validate' || mode === 'load') {
+    const manifest = await validateArchive(directory, tree, commit);
+    if (mode === 'load') {
+      execFileSync('docker', ['load', '--input', archive], { stdio: 'inherit' });
+      validateImage(inspect(), manifest);
+    }
+    return;
+  }
   if (mode === 'save') {
     const info = inspect();
     const manifest = { schema: 1, tree, commit, imageId: info.Id };
@@ -76,7 +105,7 @@ async function main(mode) {
     console.log(`Saved tested image ${info.Id} for tree ${tree}`);
     return;
   }
-  if (mode !== 'restore') throw new Error('Usage: artifacts.mjs metadata|save|restore');
+  if (mode !== 'restore' && mode !== 'find') throw new Error('Usage: artifacts.mjs metadata|gate|save|find|restore|validate|load');
   const repository = process.env.GITHUB_REPOSITORY;
   assert.match(repository, /^[\w.-]+\/[\w.-]+$/);
   const name = `verified-image-${tree}`;
@@ -89,10 +118,13 @@ async function main(mode) {
     if (!trustedRun(run, repository)) continue;
     const source = api(`repos/${repository}/git/commits/${run.head_sha}`);
     if (source.tree.sha !== tree) continue;
+    if (mode === 'find') {
+      await output('found', 'true');
+      await output('source_run', run.id);
+      return;
+    }
     execFileSync('gh', ['run', 'download', String(run.id), '--repo', repository, '--name', name, '--dir', directory], { stdio: 'inherit' });
-    const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'));
-    validateManifest(manifest, tree, run.head_sha);
-    assert.equal(await archiveHash(archive), manifest.archiveSha256, 'Image archive checksum mismatch');
+    const manifest = await validateArchive(directory, tree, run.head_sha);
     execFileSync('docker', ['load', '--input', archive], { stdio: 'inherit' });
     validateImage(inspect(), manifest);
     await output('found', 'true');

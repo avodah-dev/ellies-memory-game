@@ -132,9 +132,21 @@ function validatePorts() {
 }
 let deadline: ReturnType<typeof setTimeout> | undefined;
 try {
-	const mode = process.argv[2];
-	if (mode !== "dev" && mode !== "verify" && mode !== "release")
-		throw new Error("Usage: bun scripts/local.ts dev|verify|release");
+	const requestedMode = process.argv[2];
+	const modes = [
+		"dev",
+		"verify",
+		"release",
+		"checks",
+		"vite",
+		"container",
+	] as const;
+	type Mode = (typeof modes)[number];
+	if (!requestedMode || !modes.includes(requestedMode as Mode))
+		throw new Error(
+			"Usage: bun scripts/local.ts dev|verify|release|checks|vite|container",
+		);
+	const mode = requestedMode as Mode;
 	validatePorts();
 	for (const port of Object.values(ports)) await assertFree(port);
 	if (mode !== "dev") {
@@ -145,8 +157,10 @@ try {
 			console.error(`Local verification exceeded ${timeoutMinutes} minutes`);
 			void stop().then(() => process.exit(1));
 		}, timeoutMinutes * 60_000);
-		await wait(launch("bun", ["run", "check"]));
-		await wait(launch("bun", ["run", "test:ingest-runtime"]));
+		if (["checks", "verify", "release"].includes(mode)) {
+			await wait(launch("bun", ["run", "check"]));
+			await wait(launch("bun", ["run", "test:ingest-runtime"]));
+		}
 	}
 	const emulator = launch("node", [
 		"node_modules/firebase-tools/lib/bin/firebase.js",
@@ -163,17 +177,21 @@ try {
 		await ready(emulator);
 		if (mode === "dev") await wait(launch("bun", ["run", "dev"]));
 		else {
-			for (const step of [
-				"test:integration",
-				"test:coverage",
-				"build",
-				"test:e2e",
-				...(mode === "release" ? ["test:container"] : []),
-			])
-				await wait(launch("bun", ["run", step]));
-			console.log(
-				"Local verification passed: lint, types, unit/coverage, Firebase rules/integration, build and browsers.",
-			);
+			const steps = {
+				checks: ["test:integration", "test:coverage"],
+				vite: ["build", "test:e2e"],
+				container: ["test:container"],
+				verify: ["test:integration", "test:coverage", "build", "test:e2e"],
+				release: [
+					"test:integration",
+					"test:coverage",
+					"build",
+					"test:e2e",
+					"test:container",
+				],
+			}[mode];
+			for (const step of steps) await wait(launch("bun", ["run", step]));
+			console.log(`Local verification passed: ${mode} (${steps.join(", ")}).`);
 		}
 	};
 	await Promise.race([work(), emulatorStopped]);
