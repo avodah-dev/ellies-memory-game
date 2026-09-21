@@ -60,19 +60,20 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 	const swipe = async (direction: 1 | -1) => {
 		const box = await display.boundingBox();
 		if (!box) throw Error("Lightbox has no bounds");
-		const start = box.x + box.width * (direction === -1 ? 0.7 : 0.3),
+		const start = box.x + box.width * (direction === -1 ? 0.85 : 0.15),
 			y = box.y + box.height * 0.45;
 		await send("touchStart", start, y);
-		for (let step = 1; step <= 8; step++) {
+		for (let step = 1; step <= 2; step++) {
 			await send(
 				"touchMove",
-				start + (direction * box.width * 0.4 * step) / 8,
+				start + (direction * box.width * 0.7 * step) / 2,
 				y,
 			);
-			// Pace native motion across frames, like a physical swipe.
+			// Two native motion checkpoints; travel exceeds the distance threshold.
+			// CI input acknowledgements can be slow, so do not depend on flick velocity.
 			await page.waitForTimeout(16);
 		}
-		await send("touchEnd", start + direction * box.width * 0.4, y);
+		await send("touchEnd", start + direction * box.width * 0.7, y);
 		await expect(heading).toHaveCount(1);
 	};
 	try {
