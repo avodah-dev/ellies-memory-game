@@ -96,7 +96,7 @@ GROUP BY device, session, build
 
 ## Gameplay event dictionary (PR 3)
 
-The TypeScript dictionary is `events.ts` plus `gameplayEvents.ts`. All events have device/page-session identity, sequence, captured clock reference, environment and build. Explicit event state overrides global context: an older snapshot or queued write retains its own round/revision. `input_id` identifies a click within its page session; `gesture_id` joins that click to its pointer down/up/cancel. `write_id`, `transaction_id`, `apply_id`, `listener_id` and `timer_id` are page-session-local counters, not globally unique IDs. Always join on device plus page session as well.
+The TypeScript dictionary is `events.ts` plus `gameplayEvents.ts`. All events have device/page-session identity, sequence, captured clock reference, environment and build. Explicit event state overrides global context: an older snapshot or queued write retains its own round/revision. `input_id` identifies an activation attempt within its page session; `gesture_id` joins it to pointer down/up/cancel and any following raw click. `write_id`, `transaction_id`, `apply_id`, `listener_id` and `timer_id` are page-session-local counters, not globally unique IDs. Always join on device plus page session as well.
 
 No names, colors, image URLs, full decks, cursor coordinates, exception messages or stacks are included by these diagnostic observations. The existing SDK analytics remain separately configured. Observer/proxy records contain operation names and scalar outcomes, never arbitrary method arguments or results.
 
@@ -104,8 +104,9 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 | --- | --- |
 | `mm.conn.input` | `source`: browser/rtdb/opponent; `value`; round/revision. `observation='signal'` identifies raw callbacks; an absent/null `observation` identifies a full state snapshot. Layout effect runs and each new round/status record all three current inputs even if unchanged. Neither callback nor snapshot counts equal connection transitions. |
 | `mm.conn.ready` | `ready`, `browser_online`, `rtdb_connected`, `opponent_connected`. Reports the committed composite; it does not participate in readiness. |
-| `mm.input.pointer` | `card_id`, `phase`: down/up/cancel, `pointer_type`, `pointer_id`, `gesture_id`. Record-only React handlers; no preventDefault, capture, propagation or touch-action changes. |
-| `mm.input.click` | `card_id`, `input_id`, `gesture_id`, `pointer_type`, `ms_down_to_click`. Keyboard/unmatched/cancelled gestures have null pointer latency. Older click events without pointer IDs are associated only when one gesture is unambiguous. |
+| `mm.input.pointer` | `card_id`, `phase`: down/up/cancel, `pointer_type`, `pointer_id`, `gesture_id`. Raw observations. Touch/pen activates on down (including non-primary contacts); mouse/keyboard activates on click. No preventDefault, capture, propagation or touch-action changes. |
+| `mm.input.activation` | `card_id`, `input_id`, `gesture_id`, `pointer_type`, `source`: pointerdown/click. Exactly one event per attempted activation; game guards can still reject it. This starts same-device input latency. |
+| `mm.input.click` | Raw clicks including suppressed touch/pen duplicates. `activation_suppressed`, `association`: pointer-id/released-contact/ambiguous/none, native `pointer_id`, `native_pointer_type`, `detail`, resolved `pointer_type`, `gesture_id`, `input_id`, `ms_down_to_click`. Associated duplicates retain the down activation ID; unknown/ambiguous duplicates have null IDs and never create another activation. Keyboard/unmatched/cancelled gestures have null pointer latency. |
 | `mm.game.flip` | `result`: accepted/paused/not-ready/not-your-turn/checking-match/not-playing/two-selected/missing-card/already-flipped/already-matched. Also `paused`, `online_ready`, `checking_match`, `local_slot`, `mode`, and the state being evaluated. Gate precedence follows the existing application branches. |
 | `mm.game.state` | `phase='committed'`, mode, local slot, online readiness and game status. Both local and online controllers exist; filter `mode='online'` for room diagnosis. |
 | `mm.game.endturn` | accepted/paused/not-ready/not-your-turn. |
@@ -116,7 +117,7 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 | `mm.nav.route` | Resolved pathname. Results timer fire is distinct from navigation completion and actual `/game-over` route resolution. |
 | `mm.sync.write.skipped` | local/no-adapter/paused and caller `context`. |
 | `mm.sync.write.enqueued`, `.dequeued`, `.dropped` | `write_id`, captured input ID, `context`, epoch and round/revision. `queue_depth` counts waiting writes (decremented at dequeue/drop); dequeued adds `ms_queue_wait`. Drops use reason epoch or pause, and retain both `paused` and `current_epoch` when both conditions are true. |
-| `mm.sync.write.start`, `.result` | `transaction_id`, `write_id`, `ok`, `error_code`, `attempts`, `ms_get_game`, `ms_get_room`, `ms_commit`, `ms_tx_total`, `ms_input_to_commit`. Input latency is null for writes without a synchronous click origin. Read totals sum completed read phases across attempts; commit time is the final attempt's commit tail, and total includes retries/backoff. These are client-observed durations, not server processing times or a fixed RTT count. |
+| `mm.sync.write.start`, `.result` | `transaction_id`, `write_id`, `ok`, `error_code`, `attempts`, `ms_get_game`, `ms_get_room`, `ms_commit`, `ms_tx_total`, `ms_input_to_commit`. Input latency is null for writes without a synchronous activation origin. Read totals sum completed read phases across attempts; commit time is the final attempt's commit tail, and total includes retries/backoff. These are client-observed durations, not server processing times or a fixed RTT count. |
 | `mm.sync.tx.phase` | attempt/get-game/get-room/commit with transaction ID, attempt number and elapsed phase time. No additional reads, parallelization or transaction retries are introduced. |
 | `mm.sync.snapshot.raw` | Emitted before the adapter filter: exists, pending_writes, from_cache, round/revision, last_updated_by, decision missing/pending-write/cache/candidate. Candidate means eligible for parsing, not accepted by the hook. |
 | `mm.sync.snapshot.gate` | stale-round/self-echo/not-newer/accepted, incoming round/revision, local_round/local_version. |
@@ -214,7 +215,7 @@ ORDER BY device, event, phase
 
 Do not equate down-minus-click count with a defect: cancelled gestures, scrolling, matched/disabled cards, leaving the page and keyboard activation have different paths. Join each click's non-null gesture ID to its pointer records within the same device/page session and inspect card IDs and cancellations.
 
-Pointer-down gestures with no associated click, grouped by device/session and pointer type. Use `gesture_id`, not `input_id`: input IDs are created at click time. The cancelled subset helps distinguish intentional gesture cancellation from other unmatched downs; neither count alone proves a dropped tap. Run after the capture finishes and batches drain, since an in-flight click or a window boundary can leave a down temporarily unmatched.
+Pointer-down gestures with no associated click, grouped by device/session and pointer type. Use `gesture_id`, not `input_id`: input IDs are created at activation time. After the touch fix, no-click touch gestures can be successful activations: inspect mm.input.activation and mm.game.flip rather than interpreting this query as lost moves. The cancelled subset helps distinguish intentional gesture cancellation from other unmatched downs; neither count alone proves a dropped tap. Run after the capture finishes and batches drain, since an in-flight click or a window boundary can leave a down temporarily unmatched.
 
 ```sql
 WITH gestures AS (
@@ -456,9 +457,11 @@ ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
 
 Run lobby and mid-game tests on both real devices for the baseline. Synthetic browser taps verify delivery and isolation, not iPad hardware timing. Local Vite dev/preview servers expose the same JSON ping contract; the container suite exercises Fastify's actual endpoint. Unit checks cover timeout/cancellation and server-ack sequencing; the two-browser flow verifies successful lobby probes, touch recording, mid-game snapshot delivery and cancellation while zero non-loopback requests and console-error gates remain active.
 
-## Headline: host click to guest paint opportunity
+## Headline: host activation to guest paint opportunity
 
-This joins the actual click event to its successful write and the other device's first paint opportunity for that revision. It does not use either client's wall clock, nor the writer's acknowledgement as the start time. For touch-down-to-paint, join the click's `gesture_id` to its pointer down in the same device/page session; do not assume every click has a pointer gesture. The paint probe estimates a browser paint opportunity, not physical pixels on the display.
+This joins mm.input.activation to its successful write and the other device's first paint opportunity. Touch/pen starts at down; mouse/keyboard starts at click. It uses neither client wall time nor writer acknowledgement as its start. The paint probe estimates a browser paint opportunity, not physical display pixels.
+
+For the pre-fix EUSG baseline on cecc356, explicitly substitute event = 'mm.input.click' for event = 'mm.input.activation' below; that build had click-only activation. Run each build/room separately, label the start event, and report missing intended actions separately. Do not compare touch-down start with the old click start as if they were identical: for a contact-to-paint comparison, join the baseline click's gesture_id back to its down in the same device/session, excluding ambiguous links. The post-fix raw click stream includes suppressed duplicates and must not be used as the latency origin. This changed activation query needs preview-data validation; prior SQL confirmations apply to the earlier click query.
 
 The 100 ms endpoint-uncertainty cap is an explicit analysis choice. Inspect calibration coverage and excluded counts separately; absence is not zero latency. Report lower/upper intervals, with the clock-rate/precision assumptions in the clock contract, alongside the midpoint estimate.
 
@@ -466,7 +469,7 @@ The 100 ms endpoint-uncertainty cap is an explicit analysis choice. Inspect cali
 WITH samples AS (
 SELECT i.device AS writer, p.device AS receiver, p.session AS receiver_session,
        w.round, w.version,
-       p.at - i.at AS click_to_paint_ms,
+       p.at - i.at AS activation_to_paint_ms,
        p.lower - i.upper AS lower_ms,
        p.upper - i.lower AS upper_ms
 FROM (
@@ -477,7 +480,7 @@ FROM (
            argMin(toFloat(properties.t_server_upper_ms), toFloat(properties.seq)) AS upper
     FROM events
     WHERE timestamp > now() - INTERVAL 7 DAY
-      AND event = 'mm.input.click' AND properties.room_code = 'ROOM'
+      AND event = 'mm.input.activation' AND properties.room_code = 'ROOM'
       AND properties.clock_reference = 'fly-monotonic'
       AND properties.clock_uncertainty_ms <= 100 AND properties.t_server IS NOT NULL
     GROUP BY device, session, input
@@ -508,8 +511,8 @@ JOIN (
 WHERE i.device != p.device
 )
 SELECT writer, receiver, receiver_session, count() AS samples,
-       quantile(0.5)(click_to_paint_ms) AS median_ms,
-       quantile(0.95)(click_to_paint_ms) AS p95_ms,
+       quantile(0.5)(activation_to_paint_ms) AS median_ms,
+       quantile(0.95)(activation_to_paint_ms) AS p95_ms,
        quantile(0.5)(lower_ms) AS median_lower_ms,
        quantile(0.5)(upper_ms) AS median_upper_ms,
        quantile(0.95)(lower_ms) AS p95_lower_ms,
@@ -533,3 +536,13 @@ WHERE timestamp > now() - INTERVAL 7 DAY
   AND properties.page_session_id = 'SESSION'
 ORDER BY toInt(properties.seq)
 ```
+
+## Touch activation contract (Fix 1)
+
+Nathan chose touch-down activation after EUSG confirmed lost simultaneous touch clicks. Each touch or pen-tip contact attempts a flip immediately, including non-primary fingers. Mouse and keyboard/assistive button clicks retain native activation. A following touch/pen click is recorded but never retries that attempt, even if the original move was rejected. Matched cards remain disabled; game guards are unchanged.
+
+Accepted trade-off: a contact that later pans, cancels or becomes a long hold has already attempted its move. There is no undo and no delay for gesture recognition. Existing scrolling/touch-action policy is unchanged. Pen secondary/eraser buttons do not activate on down.
+
+Input behavior does not depend on telemetry. Each card owns bounded contact bookkeeping (16 records), expiring completed correlation candidates after 1.5 seconds; this is an association window, not a click-suppression timer. Native pointer identity is preferred. ID-less/unmatched-ID clicks associate only with one recent, non-cancelled released contact of the resolved input type within two CSS pixels of release; ambiguous cases stay unassociated. Keyboard detail=0 clicks do not consume touch records. Native WebKit testing exposed touch pointerId=0 followed by a mouse-labelled click with pointerId=1 and no mouse down. The preceding direct contact determines the resolved modality for that sequence; native fields remain in the event for audit. A real mouse down changes the current modality immediately. Coordinates are used locally for association and are not uploaded.
+
+The Connection Test's touch probes remain raw browser-click probes. Their both_clicked_pairs score can still be low on iOS after game activation is fixed; measure game mm.input.activation → mm.game.flip instead. Browser tests inject simultaneous PointerEvents in Chromium and WebKit to verify real app handlers; they do not simulate iOS hardware click synthesis. Physical iPad PWA preview acceptance is required before production.

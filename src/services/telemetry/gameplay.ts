@@ -1,3 +1,4 @@
+import type { CardGesture, ClickDecision } from "../../utils/cardInput";
 import type { Card, GameState, OnlineGameState } from "../../types";
 import type { Detail, StateFields } from "./gameplayEvents";
 import { beginInput, currentInputId, getContext, track } from "./core";
@@ -65,71 +66,60 @@ export function classifyFlipRejection(
 let inputStarted: number | null = null;
 export const inputTime = () =>
 	currentInputId() === null ? null : inputStarted;
-interface Gesture {
-	id: string;
-	at: number;
-	type: string;
-	cancelled: boolean;
-}
-const gestures = new WeakMap<EventTarget, Map<number, Gesture>>();
 export function trackPointer(
 	cardId: string,
 	phase: "down" | "up" | "cancel",
-	event: { currentTarget: EventTarget; pointerId: number; pointerType: string },
+	event: { pointerId: number; pointerType: string },
+	gesture: CardGesture | null,
 ) {
-	let pointers = gestures.get(event.currentTarget);
-	if (!pointers) {
-		pointers = new Map();
-		gestures.set(event.currentTarget, pointers);
-	}
-	if (phase === "down") {
-		if (pointers.size >= 8) pointers.clear();
-		pointers.set(event.pointerId, {
-			id: nextId(),
-			at: performance.now(),
-			type: event.pointerType,
-			cancelled: false,
-		});
-	}
-	const gesture = pointers.get(event.pointerId);
-	if (gesture && phase === "cancel") gesture.cancelled = true;
 	track("mm.input.pointer", {
 		card_id: cardId,
 		phase,
 		pointer_type: event.pointerType,
 		pointer_id: event.pointerId,
+		input_id: gesture?.inputId ?? null,
 		gesture_id: gesture?.id ?? null,
 	});
 }
-export function trackCardClick(
+export function trackCardActivation(
 	cardId: string,
-	event: {
-		currentTarget: EventTarget;
-		detail: number;
-		nativeEvent: MouseEvent;
-	},
+	source: "pointerdown" | "click",
+	type: string,
+	gesture: CardGesture | null,
 ) {
-	const native = event.nativeEvent as PointerEvent;
-	const pointers = gestures.get(event.currentTarget);
-	const gesture =
-		typeof native.pointerId === "number"
-			? pointers?.get(native.pointerId)
-			: pointers && pointers.size === 1
-				? pointers.values().next().value
-				: undefined;
-	const eligible = event.detail > 0 && gesture && !gesture.cancelled;
 	const id = beginInput();
 	inputStarted = performance.now();
-	track("mm.input.click", {
+	if (gesture) gesture.inputId = id;
+	track("mm.input.activation", {
 		card_id: cardId,
 		input_id: id,
-		gesture_id: eligible ? gesture.id : null,
-		pointer_type:
-			native.pointerType ||
-			(eligible ? gesture.type : event.detail === 0 ? "keyboard" : "unknown"),
-		ms_down_to_click: eligible ? performance.now() - gesture.at : null,
+		source,
+		pointer_type: type,
+		gesture_id: gesture?.id ?? null,
 	});
-	pointers?.clear();
+	return id;
+}
+export function trackCardClick(
+	cardId: string,
+	event: { detail: number; nativeEvent: MouseEvent },
+	decision: ClickDecision,
+	inputId: string | null,
+) {
+	const native = event.nativeEvent as Partial<PointerEvent>;
+	const gesture = decision.gesture;
+	track("mm.input.click", {
+		card_id: cardId,
+		input_id: inputId,
+		gesture_id: gesture?.id ?? null,
+		pointer_type: decision.type,
+		native_pointer_type: native.pointerType ?? null,
+		pointer_id: native.pointerId ?? null,
+		detail: event.detail,
+		association: decision.association,
+		activation_suppressed: !decision.activate,
+		ms_down_to_click:
+			gesture && !gesture.cancelled ? performance.now() - gesture.at : null,
+	});
 }
 export function trackFlip(
 	state: GameState,

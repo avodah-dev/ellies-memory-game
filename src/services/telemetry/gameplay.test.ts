@@ -1,8 +1,10 @@
+import { createCardInput } from "../../utils/cardInput";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createCardSet, createTestOnlineGameState } from "../../test/testUtils";
 import { beginInput, getContext, track } from "./core";
 import {
 	classifyFlipRejection,
+	trackCardActivation,
 	trackCardClick,
 	trackPointer,
 	createSyncTrace,
@@ -75,36 +77,33 @@ it("classifies each engine rejection without changing state", () => {
 	).toBe("two-selected");
 	expect(s.cards[0].isFlipped).toBe(false);
 });
-it("correlates touch down/up/click and distinguishes cancelled/keyboard activations", () => {
-	const target = new EventTarget(),
-		event = { currentTarget: target, pointerId: 4, pointerType: "touch" };
-	trackPointer("card-0", "down", event);
-	trackPointer("card-0", "up", event);
-	trackCardClick("card-0", {
-		currentTarget: target,
+it("links raw pointer/click observations to one down activation without starting another input", () => {
+	const input = createCardInput();
+	const event = {
+		pointerId: 4,
+		pointerType: "touch",
+		button: 0,
+		clientX: 10,
+		clientY: 20,
+	};
+	const gesture = input.down(event);
+	trackPointer("card-0", "down", event, gesture);
+	const id = trackCardActivation("card-0", "pointerdown", "touch", gesture);
+	trackPointer("card-0", "up", event, input.end(event, false));
+	const click = {
 		detail: 1,
-		nativeEvent: { pointerId: 4, pointerType: "touch" } as PointerEvent,
-	});
-	const calls = vi.mocked(track).mock.calls;
-	expect(calls[0][1]).toMatchObject({ phase: "down", pointer_type: "touch" });
-	expect(calls[2][1]).toMatchObject({
-		gesture_id: (calls[0][1] as { gesture_id: string }).gesture_id,
-		pointer_type: "touch",
+		nativeEvent: { pointerId: 0, clientX: 10, clientY: 20 } as PointerEvent,
+	};
+	const decision = input.click(click);
+	trackCardClick("card-0", click, decision, decision.gesture?.inputId ?? null);
+	expect(beginInput).toHaveBeenCalledTimes(1);
+	expect(vi.mocked(track).mock.lastCall?.[1]).toMatchObject({
+		input_id: id,
+		gesture_id: gesture.id,
+		activation_suppressed: true,
+		association: "released-contact",
 		ms_down_to_click: expect.any(Number),
 	});
-	trackPointer("card-0", "down", event);
-	trackPointer("card-0", "cancel", event);
-	trackCardClick("card-0", {
-		currentTarget: target,
-		detail: 0,
-		nativeEvent: {} as MouseEvent,
-	});
-	expect(vi.mocked(track).mock.lastCall?.[1]).toMatchObject({
-		gesture_id: null,
-		pointer_type: "keyboard",
-		ms_down_to_click: null,
-	});
-	expect(beginInput).toHaveBeenCalledTimes(2);
 });
 it("keeps queue identity and differentiates epoch and pause drops", () => {
 	const sync = createSyncTrace(),

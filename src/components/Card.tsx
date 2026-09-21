@@ -1,5 +1,11 @@
+import { useState } from "react";
+import { createCardInput } from "../utils/cardInput";
 import { counters } from "../services/telemetry/core";
-import { trackPointer, trackCardClick } from "../services/telemetry/gameplay";
+import {
+	trackPointer,
+	trackCardClick,
+	trackCardActivation,
+} from "../services/telemetry/gameplay";
 import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card as CardType } from "../types";
 
@@ -25,6 +31,7 @@ export const Card = ({
 	forceGameplayBackground = false,
 }: CardProps) => {
 	counters.cardRenders++;
+	const [input] = useState(createCardInput);
 	// Calculate font size based on card size and emoji size percentage
 	// emojiSizePercentage is a percentage (e.g., 72 means 72% of card size)
 	const fontSize = Math.round((size * emojiSizePercentage) / 100);
@@ -55,12 +62,32 @@ export const Card = ({
 			disabled={card.isMatched}
 			data-card-id={card.id}
 			data-allow-touchmove
-			onPointerDown={(event) => trackPointer(card.id, "down", event)}
-			onPointerUp={(event) => trackPointer(card.id, "up", event)}
-			onPointerCancel={(event) => trackPointer(card.id, "cancel", event)}
+			onPointerDown={(event) => {
+				const gesture = input.down(event);
+				trackPointer(card.id, "down", event, gesture);
+				if (gesture.handled && !card.isMatched) {
+					trackCardActivation(card.id, "pointerdown", gesture.type, gesture);
+					onClick();
+				}
+			}}
+			onPointerUp={(event) =>
+				trackPointer(card.id, "up", event, input.end(event, false))
+			}
+			onPointerCancel={(event) =>
+				trackPointer(card.id, "cancel", event, input.end(event, true))
+			}
 			onClick={(event) => {
-				trackCardClick(card.id, event);
-				onClick();
+				const decision = input.click(event);
+				const id = decision.activate
+					? trackCardActivation(
+							card.id,
+							"click",
+							decision.type,
+							decision.gesture,
+						)
+					: (decision.gesture?.inputId ?? null);
+				trackCardClick(card.id, event, decision, id);
+				if (decision.activate) onClick();
 			}}
 			className={`relative transition-transform duration-500 transform-gpu ${card.isMatched ? "cursor-default" : "cursor-pointer"}`}
 			style={{
