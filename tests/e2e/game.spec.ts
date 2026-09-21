@@ -517,6 +517,232 @@ test("primary mouse press flips before release, drag-off stays flipped, keyboard
 	).toBe(true);
 });
 
+test("a flying matched card cannot intercept a press on the next playable card", async ({
+	page,
+	context,
+}) => {
+	await localRequestsOnly(context);
+	await home(page);
+	await page.getByRole("button", { name: /Same Device Play/ }).click();
+	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
+	await page.getByRole("button", { name: "20 8×5 Hard" }).click();
+	await page
+		.getByRole("button", { name: "🎮 Start Game", exact: true })
+		.click();
+	const board = page.getByRole("application", { name: "Game board" });
+	await expect(board).toBeVisible();
+	await board.evaluate(async (e) => {
+		await Promise.allSettled(
+			e.getAnimations({ subtree: true }).map((a) => a.finished),
+		);
+	});
+	const bottom = await board.locator("button[data-card-id]").evaluateAll(
+		(nodes) =>
+			nodes
+				.map((n) => ({
+					id: Number(n.getAttribute("data-card-id")!.split("-")[1]),
+					y: n.getBoundingClientRect().bottom,
+				}))
+				.sort((a, b) => b.y - a.y)[0].id,
+	);
+	// Freeze only this decorative animation before it mounts. Slow CI/WebKit can
+	// otherwise finish the flight between the visibility check and geometry read.
+	await page.addStyleTag({
+		content: ".card-fly-to-player { animation-play-state: paused !important; }",
+	});
+	await card(page, bottom).click();
+	await card(page, bottom ^ 1).click();
+	await expect(page.locator(".card-fly-to-player").first()).toBeVisible();
+	// Scrub the actual flight keyframes until they cover a playable card center;
+	// preserve its real geometry and deliver native input through that decoration.
+	const point = await page.evaluate(async () => {
+		const flights = [...document.querySelectorAll(".card-fly-to-player")];
+		const animations = flights.flatMap((f) => f.getAnimations());
+		if (!animations.length) throw Error("No flight animation to inspect");
+		for (let percent = 1; percent < 100; percent++) {
+			for (const animation of animations) {
+				const duration = Number(animation.effect!.getComputedTiming().duration);
+				animation.currentTime = (duration * percent) / 100;
+			}
+			await new Promise(requestAnimationFrame);
+			for (const card of document.querySelectorAll(
+				'main [role="application"] button[data-card-id]:enabled',
+			)) {
+				const c = card.getBoundingClientRect(),
+					x = c.x + c.width / 2,
+					y = c.y + c.height / 2;
+				if (
+					flights.some((f) => {
+						const r = f.getBoundingClientRect();
+						return (
+							x > r.left + 8 &&
+							x < r.right - 8 &&
+							y > r.top + 8 &&
+							y < r.bottom - 8
+						);
+					})
+				) {
+					for (const f of flights)
+						for (const a of f.getAnimations({ subtree: true })) a.pause();
+					return {
+						x,
+						y,
+						id: Number(card.getAttribute("data-card-id")!.split("-")[1]),
+					};
+				}
+			}
+		}
+		throw Error("No flight crossed a playable card");
+	});
+	if (test.info().project.name === "webkit")
+		await page.touchscreen.tap(point.x, point.y);
+	else await page.mouse.click(point.x, point.y);
+	await expect(card(page, point.id)).toHaveAttribute("aria-pressed", "true");
+	await expect
+		.poll(async () =>
+			(await diagnostics(page)).some(
+				(r) =>
+					r.message === "mm.input.capture" &&
+					r.context.event_type === "pointerdown" &&
+					r.context.target_card_id === "card-" + point.id &&
+					r.context.card_handler_ran === true,
+			),
+		)
+		.toBe(true);
+});
+
+test("staggered contacts reach both cards during the first flip", async ({
+	page,
+	context,
+}) => {
+	await localRequestsOnly(context);
+	await home(page);
+	await page.getByRole("button", { name: /Same Device Play/ }).click();
+	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
+	await page.getByRole("button", { name: "8 4×4 Medium" }).click();
+	await page
+		.getByRole("button", { name: "🎮 Start Game", exact: true })
+		.click();
+	const board = page.getByRole("application", { name: "Game board" });
+	await expect(board).toBeVisible();
+	await board.evaluate(async (e) => {
+		await Promise.allSettled(
+			e.getAnimations({ subtree: true }).map((a) => a.finished),
+		);
+	});
+	const cdp =
+		test.info().project.name === "chromium"
+			? await context.newCDPSession(page)
+			: null;
+	if (cdp)
+		await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+	let id = 0;
+	for (const pattern of ["overlap", "just-up"])
+		for (const delay of [60, 120, 200, 300]) {
+			const a = await card(page, id).boundingBox(),
+				b = await card(page, id + 1).boundingBox();
+			if (!a || !b) throw Error("Missing staggered pair");
+			const points = [
+				{ id: 1, x: a.x + a.width / 2, y: a.y + a.height / 2 },
+				{ id: 2, x: b.x + b.width / 2, y: b.y + b.height / 2 },
+			];
+			if (cdp) {
+				await cdp.send("Input.dispatchTouchEvent", {
+					type: "touchStart",
+					touchPoints: [points[0]],
+				});
+				if (pattern === "just-up") {
+					await page.waitForTimeout(30);
+					await cdp.send("Input.dispatchTouchEvent", {
+						type: "touchEnd",
+						touchPoints: [],
+					});
+					await page.waitForTimeout(delay - 30);
+				} else await page.waitForTimeout(delay);
+				await cdp.send("Input.dispatchTouchEvent", {
+					type: "touchStart",
+					touchPoints: pattern === "overlap" ? points : [points[1]],
+				});
+				await cdp.send("Input.dispatchTouchEvent", {
+					type: "touchEnd",
+					touchPoints: [],
+				});
+			} else if (pattern === "just-up") {
+				// Native WebKit taps include the browser's pointer/touch/click synthesis.
+				await page.touchscreen.tap(points[0].x, points[0].y);
+				await page.waitForTimeout(delay);
+				await page.touchscreen.tap(points[1].x, points[1].y);
+			} else {
+				// WebKit's driver exposes only complete taps. This overlapping case
+				// injects contacts through real hit-testing, not iOS gesture recognition.
+				await page.evaluate(
+					async ({ points, delay }) => {
+						const targets = points.map(
+							(p) => document.elementFromPoint(p.x, p.y)!,
+						);
+						const send = (n: number, type: string, target: Element) => {
+							const p = points[n];
+							target.dispatchEvent(
+								new PointerEvent(type, {
+									bubbles: true,
+									cancelable: true,
+									pointerType: "touch",
+									pointerId: p.id,
+									button: 0,
+									isPrimary: n === 0,
+									clientX: p.x,
+									clientY: p.y,
+								}),
+							);
+						};
+						send(0, "pointerdown", targets[0]);
+						await new Promise((r) => setTimeout(r, delay));
+						send(
+							1,
+							"pointerdown",
+							document.elementFromPoint(points[1].x, points[1].y)!,
+						);
+						send(0, "pointerup", targets[0]);
+						send(1, "pointerup", targets[1]);
+					},
+					{ points, delay },
+				);
+			}
+			await expect(card(page, id)).toHaveAttribute("aria-pressed", "true");
+			await expect(card(page, id + 1)).toHaveAttribute("aria-pressed", "true");
+			await expect(card(page, id)).toHaveCount(0);
+			id += 2;
+		}
+	await expect(page).toHaveURL(/\/game-over$/);
+	await expect
+		.poll(
+			async () =>
+				(await diagnostics(page)).filter((r) => r.message === "mm.game.flip")
+					.length,
+		)
+		.toBe(16);
+	const events = await diagnostics(page);
+	expect(
+		events
+			.filter((r) => r.message === "mm.game.flip")
+			.every((r) => r.context.result === "accepted"),
+	).toBe(true);
+	const captures = events.filter(
+		(r) =>
+			r.message === "mm.input.capture" &&
+			r.context.event_type === "pointerdown",
+	);
+	expect(captures).toHaveLength(16);
+	expect(
+		captures.every(
+			(r) =>
+				r.context.card_handler_ran === true &&
+				r.context.target_card_id === r.context.hit_card_id,
+		),
+	).toBe(true);
+	if (cdp) await cdp.detach();
+});
+
 test("named players start a 16-pair Thanksgiving game with strict rules", async ({
 	browser,
 	page: host,
