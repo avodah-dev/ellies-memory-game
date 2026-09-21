@@ -77,7 +77,7 @@ it("does not manufacture links for ambiguous, cancelled, expired or wrong-type g
 	});
 	expect(
 		input.click(click({ pointerId: 3, pointerType: "mouse" })),
-	).toMatchObject({ activate: true, gesture: null });
+	).toMatchObject({ activate: false, gesture: { cancelled: true } });
 });
 it("keeps mouse, keyboard and assistive clicks immediately after touch; no suppression timeout", () => {
 	const input = createCardInput();
@@ -112,4 +112,23 @@ it("accepts pen tip only, suppresses direct clicks even with no surviving contac
 	expect(
 		input.click(click({ pointerId: 10, pointerType: "touch" })).gesture,
 	).toBeNull();
+});
+
+it("suppresses WebKit's native mouse-labelled click after touch, without suppressing a real mouse", () => {
+	const input = createCardInput();
+	const g = input.down(pointer(0));
+	input.end(pointer(0), false);
+	expect(
+		input.click(click({ pointerId: 1, pointerType: "mouse" })),
+	).toMatchObject({
+		activate: false,
+		type: "touch",
+		gesture: { id: g.id },
+		association: "released-contact",
+	});
+	input.down(pointer(1, "mouse"));
+	input.end(pointer(1, "mouse"), false);
+	expect(
+		input.click(click({ pointerId: 1, pointerType: "mouse" })),
+	).toMatchObject({ activate: true, type: "mouse", association: "pointer-id" });
 });

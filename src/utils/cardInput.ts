@@ -86,7 +86,13 @@ export function createCardInput(now = () => performance.now()) {
 					gesture: null,
 					association: "none",
 				};
-			const type = declaredType || lastPointerType || "unknown";
+			// Native WebKit taps can end with pointerType="mouse", pointerId=1
+			// after touch pointerId=0, without any mouse pointerdown. The actual
+			// preceding contact wins; a real mouse down switches modality at once.
+			const type =
+				declaredType === "mouse" && direct(lastPointerType)
+					? lastPointerType
+					: declaredType || lastPointerType || "unknown";
 			let gesture =
 				typeof native.pointerId === "number"
 					? (gestures.get(native.pointerId) ?? null)
