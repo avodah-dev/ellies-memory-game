@@ -107,6 +107,7 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 		await send("touchEnd", start + direction * box.width * 0.7, y);
 		await expect(heading).toHaveCount(1);
 	};
+	let assertionFailed = false;
 	try {
 		await swipe(-1);
 		await expect(heading).not.toHaveText(first);
@@ -140,17 +141,28 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 		expect(events.some((e) => e.type === "touchmove")).toBe(true);
 		expect(events.every((e) => e.trusted)).toBe(true);
 		expect(events.filter((e) => e.type === "touchcancel")).toHaveLength(0);
+	} catch (error) {
+		assertionFailed = true;
+		throw error;
 	} finally {
-		await test.info().attach("native-lightbox-gestures", {
-			body: JSON.stringify(
-				await display.evaluate(
-					(el) =>
-						(el as HTMLElement & { recordedTouches: GestureEvidence[] })
-							.recordedTouches,
-				),
-			),
-			contentType: "application/json",
-		});
-		await chromium?.detach();
+		try {
+			// Read immediately: a missing lightbox must not start another locator wait.
+			const evidence = await page.evaluate(() => {
+				const el = document.querySelector(
+					'[role="region"][aria-label="Card display"]',
+				) as (HTMLElement & { recordedTouches: GestureEvidence[] }) | null;
+				return el ? el.recordedTouches : { unavailable: "lightbox removed" };
+			});
+			await test.info().attach("native-lightbox-gestures", {
+				body: JSON.stringify(evidence),
+				contentType: "application/json",
+			});
+		} catch (error) {
+			// Preserve the original failure if the browser closed or evidence failed.
+			if (!assertionFailed) throw error;
+		} finally {
+			// Detach even when evidence collection fails or the page has closed.
+			await chromium?.detach().catch(() => {});
+		}
 	}
 }
