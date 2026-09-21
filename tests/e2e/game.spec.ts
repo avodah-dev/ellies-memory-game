@@ -1,3 +1,4 @@
+import { expectLightboxNavigation } from "./lightboxGestures";
 import {
 	test as base,
 	expect,
@@ -309,8 +310,10 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
 	await expect(page.locator(".card-fly-to-player")).toHaveCount(2);
 	await expect(card(page, 0)).toHaveCount(0);
+	await card(page, 3).click();
+	await expect(card(page, 2)).toHaveCount(0);
 	// Preview actions must remain native buttons even when their artwork is matched.
-	await page.getByRole("button", { name: "1", exact: true }).click();
+	await page.getByRole("button", { name: "2", exact: true }).click();
 	await expect(page.getByRole("heading", { name: "Player 1's Matches" })).toBeVisible();
 	const preview = page.getByRole("dialog").getByTitle("Click to view card details").first();
 	const tapPreview = async () => {
@@ -323,6 +326,7 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 		await expect(page.getByRole("region", { name: "Card display" })).toBeVisible();
 	};
 	await tapPreview();
+	await expectLightboxNavigation(page, test.info().project.name);
 	await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
 	await expect(preview.locator("button")).toHaveCount(0);
 	for (const key of ["Enter", "Space"]) {
@@ -332,13 +336,12 @@ test("complete a local game using keyboard and pointer, then replay", async ({
 		await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
 	}
 	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
-	await card(page, 3).click();
-	await expect(card(page, 2)).toHaveCount(0);
 	for (const id of [4, 6]) await match(page, id);
 	await expect(page).toHaveURL(/\/game-over$/);
 	await expect(page.getByText(/wins/i).first()).toBeVisible();
 	await page.getByRole("button", { name: "Explore All Cards", exact: true }).click();
 	await tapPreview();
+	await expectLightboxNavigation(page, test.info().project.name);
 	await page.getByRole("button", { name: "Close lightbox", exact: true }).click();
 	await expect(page.getByRole("dialog").locator("button button")).toHaveCount(0);
 	await page.getByRole("dialog").getByRole("button", { name: "Close modal", exact: true }).click();
@@ -926,9 +929,25 @@ for (const transport of ["default", "polling"] as const) {
 			const count = await host
 				.locator("main button[data-card-id]:enabled")
 				.count();
-			for (let id = 2; id < count + 2; id += 2) await match(host, id);
+			for (let id = 2; id < count + 2; id += 2) {
+        await match(host, id);
+        if (transport === "default" && id === 2) {
+          await host.getByRole("button", {name:"2",exact:true}).click();
+          await host.getByRole("dialog").getByTitle("Click to view card details").first().click();
+          await expectLightboxNavigation(host,test.info().project.name);
+          await host.getByRole("button", {name:"Close lightbox",exact:true}).click();
+          await host.getByRole("dialog").getByRole("button", {name:"Close modal",exact:true}).click();
+        }
+      }
 			await expect(host).toHaveURL(/\/game-over$/);
 			await expect(guest).toHaveURL(/\/game-over$/);
+      if(transport === "default") {
+        await host.getByRole("button",{name:"Explore All Cards",exact:true}).click();
+        await host.getByRole("dialog").getByTitle("Click to view card details").first().click();
+        await expectLightboxNavigation(host,test.info().project.name);
+        await host.getByRole("button",{name:"Close lightbox",exact:true}).click();
+        await host.getByRole("dialog").getByRole("button",{name:"Close modal",exact:true}).click();
+      }
 			if (transport === "default")
 				await expect
 					.poll(async () => {
