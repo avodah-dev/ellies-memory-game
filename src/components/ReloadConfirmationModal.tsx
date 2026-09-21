@@ -6,15 +6,22 @@ interface ReloadConfirmationModalProps {
 	onCancel: () => void;
 	onConfirm: () => void;
 	isReloading: boolean;
+	error?: string | null;
 }
 
 export const ReloadConfirmationModal = ({
 	onCancel,
 	onConfirm,
 	isReloading,
+	error,
 }: ReloadConfirmationModalProps) => {
 	return (
 		<div className="text-center space-y-6">
+			{error && (
+				<p role="alert" className="text-red-700">
+					{error}
+				</p>
+			)}
 			<div>
 				<div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
 					<svg

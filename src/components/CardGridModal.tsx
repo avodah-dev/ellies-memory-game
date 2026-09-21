@@ -1,7 +1,6 @@
 import { type ReactNode, useState } from "react";
-import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card } from "../types";
-import { Card as CardComponent } from "./Card";
+import { CardThumbnail } from "./CardThumbnail";
 import { CardLightbox } from "./CardLightbox";
 
 // Fixed card size for modal display - independent of game board card size
@@ -15,7 +14,6 @@ interface CardGridModalProps {
 	cards: Card[]; // Cards to display in the grid
 	useWhiteCardBackground?: boolean;
 	emojiSizePercentage?: number;
-	cardBack?: CardBackOption;
 	emptyMessage?: string; // Customizable empty state message
 	renderCard?: (
 		card: Card,
@@ -32,7 +30,6 @@ export const CardGridModal = ({
 	cards,
 	useWhiteCardBackground = false,
 	emojiSizePercentage = 72,
-	cardBack,
 	emptyMessage = "No cards available!",
 	renderCard,
 }: CardGridModalProps) => {
@@ -68,17 +65,14 @@ export const CardGridModal = ({
 					onCardClick(index);
 				}}
 				className="cursor-pointer transition-transform can-hover:scale-110 active:scale-95 border-0 bg-transparent p-0"
+				aria-label={`View ${card.imageId.replaceAll("-", " ")}`}
 				title="Click to view card details"
 			>
-				<CardComponent
+				<CardThumbnail
 					card={card}
-					onClick={() => {}}
 					size={MODAL_CARD_SIZE}
 					useWhiteBackground={useWhiteCardBackground}
 					emojiSizePercentage={emojiSizePercentage}
-					cardBack={cardBack}
-					forceGameplaySize={true}
-					forceGameplayBackground={true}
 				/>
 			</button>
 		</div>

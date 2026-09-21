@@ -1,3 +1,4 @@
+import { isCardImageSource } from "../utils/cardImage";
 import { markCardInput } from "../services/telemetry/inputCapture";
 import { useState } from "react";
 import { createCardInput } from "../utils/cardInput";
@@ -181,12 +182,7 @@ export const Card = ({
 								: `${fontSize}px`,
 					}}
 				>
-					{card.imageUrl &&
-					(card.imageUrl.startsWith("http") ||
-						card.imageUrl.startsWith("/") ||
-						card.imageUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
-						card.imageUrl.includes("blob:") ||
-						card.imageUrl.includes("data:")) ? (
+					{isCardImageSource(card.imageUrl) ? (
 						<img
 							src={card.imageUrl}
 							alt=""

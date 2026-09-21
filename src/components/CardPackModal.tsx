@@ -1,7 +1,6 @@
 import { debugLog } from "../utils/debugLog";
 import { useState } from "react";
 import { CARD_DECKS } from "../data/cardDecks";
-import { useCardBackSelector } from "../hooks/useCardBackSelector";
 import type { Card, CardPackOption } from "../types";
 import { CardExplorerModal } from "./CardExplorerModal";
 
@@ -41,7 +40,6 @@ export const CardPackModal = ({
 		getInitialTab(),
 	);
 	const [previewPackId, setPreviewPackId] = useState<string | null>(null);
-	const { getCurrentCardBack } = useCardBackSelector();
 
 	const handleSelect = (packId: string) => {
 		logWizardInteraction("Card pack selected", { packId, selectedPack });
@@ -665,7 +663,6 @@ export const CardPackModal = ({
 				cards={previewCards}
 				useWhiteCardBackground={false}
 				emojiSizePercentage={72}
-				cardBack={getCurrentCardBack()}
 			/>
 		</div>
 	);

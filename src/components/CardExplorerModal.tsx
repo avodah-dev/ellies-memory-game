@@ -1,4 +1,3 @@
-import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card } from "../types";
 import { CardGridModal } from "./CardGridModal";
 
@@ -8,7 +7,6 @@ interface CardExplorerModalProps {
 	cards: Card[];
 	useWhiteCardBackground?: boolean;
 	emojiSizePercentage?: number;
-	cardBack?: CardBackOption;
 }
 
 export const CardExplorerModal = ({
@@ -17,7 +15,6 @@ export const CardExplorerModal = ({
 	cards,
 	useWhiteCardBackground = false,
 	emojiSizePercentage = 72,
-	cardBack,
 }: CardExplorerModalProps) => {
 	// Get unique cards (one per imageId) and ensure they're flipped to show faces
 	const uniqueCardsMap = new Map<string, Card>();
@@ -40,7 +37,6 @@ export const CardExplorerModal = ({
 			cards={uniqueCards}
 			useWhiteCardBackground={useWhiteCardBackground}
 			emojiSizePercentage={emojiSizePercentage}
-			cardBack={cardBack}
 			emptyMessage="No cards available!"
 		/>
 	);
