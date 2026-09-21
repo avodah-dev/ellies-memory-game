@@ -24,10 +24,17 @@ import { ReloadConfirmationModal } from "../components/ReloadConfirmationModal";
 import { ResetConfirmationModal } from "../components/ResetConfirmationModal";
 import { SettingsMenu } from "../components/SettingsMenu";
 import type { AppModel } from "../hooks/useAppModel";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useStore } from "zustand";
+import { AppUpdateNotice } from "../components/AppUpdateNotice";
+import { appUpdateStore } from "../stores/appUpdateStore";
+import { buildUpdates } from "../services/updates/buildUpdate";
+import type { OnlineGameState } from "../types";
 import { reloadApp } from "../utils/reloadApp";
 export function AppShell({ model }: { model: AppModel }) {
 	const [isReloading, setIsReloading] = useState(false);
+	const [updateReload, setUpdateReload] = useState(false);
+	const updateError = useStore(appUpdateStore, (s) => s.error);
 	const onlineError = useOnlineStore((s) => s.error);
 	const {
 		backgroundLayerClass,
@@ -103,9 +110,29 @@ export function AppShell({ model }: { model: AppModel }) {
 		showPWAInstall,
 		handlePWAInstallClose,
 	} = model;
+	const round = (gameState as Partial<OnlineGameState>).gameRound ?? 0;
+	useEffect(() => {
+		buildUpdates.boundary(
+			`${gameMode}|${roomCode}|${gameState.gameStatus}|${round}`,
+			{
+				mode: gameMode,
+				game_status: gameState.gameStatus,
+				game_round: round,
+			},
+		);
+	}, [gameMode, roomCode, gameState.gameStatus, round]);
 	if (model.isStandalonePage) return <Outlet />;
 	return (
 		<>
+			{!showReloadConfirmation && (
+				<AppUpdateNotice
+					onReload={() => {
+						appUpdateStore.setState({ error: null });
+						setUpdateReload(true);
+						setShowReloadConfirmation(true);
+					}}
+				/>
+			)}
 			{/* Background layer - blurred during gameplay */}
 			{/* Extended beyond viewport (-8) to hide blur edge artifacts */}
 			<div
@@ -261,16 +288,27 @@ export function AppShell({ model }: { model: AppModel }) {
 					<Modal
 						isOpen={showReloadConfirmation}
 						onClose={() => {
-							if (!isReloading) setShowReloadConfirmation(false);
+							if (!isReloading) {
+								setShowReloadConfirmation(false);
+								setUpdateReload(false);
+							}
 						}}
 						title="Reload App"
 					>
 						<ReloadConfirmationModal
-							onCancel={() => setShowReloadConfirmation(false)}
+							onCancel={() => {
+								setShowReloadConfirmation(false);
+								setUpdateReload(false);
+							}}
 							isReloading={isReloading}
-							onConfirm={() => {
+							error={updateReload ? updateError : null}
+							onConfirm={async () => {
 								if (isReloading) return;
 								setIsReloading(true);
+								if (updateReload && !(await buildUpdates.prepareReload())) {
+									setIsReloading(false);
+									return;
+								}
 								void reloadApp();
 							}}
 						/>

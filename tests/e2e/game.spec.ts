@@ -1066,3 +1066,50 @@ test("Connection Test completes in the lobby and does not disconnect an active g
 		await guestContext.close();
 	}
 });
+
+test("a served build change offers an explicit reload without interrupting play", async ({ page, context }) => {
+	await localRequestsOnly(context);
+	await home(page);
+	await page.getByRole("button", { name: /Same Device Play/ }).click();
+	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
+	await page.getByRole("button", { name: "4 4×2 Easy" }).click();
+	await page.getByRole("button", { name: "🎮 Start Game", exact: true }).click();
+	await expect(page).toHaveURL(/\/local\/game$/);
+	const device = await page.evaluate(() => {
+		localStorage.setItem("update-saved-setting", "keep-me");
+		return localStorage.getItem("matchimus-device-id");
+	});
+	let healthy = true;
+	await context.route("**/healthz", route => route.fulfill({ status: healthy ? 200 : 503, contentType: "application/json", body: JSON.stringify({ status: "ok", commit: "b".repeat(40), environment: "emulator" }) }));
+	// Exercise the real registered lifecycle trigger with a changed same-origin response.
+	await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+	const notice = page.getByRole("complementary", { name: "App update" });
+	await expect(notice).toBeVisible();
+	await card(page, 0).click();
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
+	await notice.getByRole("button", { name: "Reload", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Clear Cache & Reload" })).toBeVisible();
+	await page.getByRole("button", { name: "Cancel", exact: true }).click();
+	await expect(page).toHaveURL(/\/local\/game$/);
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
+	await notice.getByRole("button", { name: "Later", exact: true }).click();
+	await expect(notice.getByRole("button", { name: "Update available", exact: true })).toBeVisible();
+	await card(page, 1).click();
+	await expect(card(page, 0)).toHaveCount(0);
+	for (const id of [2, 4, 6]) await match(page, id);
+	await expect(page).toHaveURL(/\/game-over$/);
+	await expect(notice.getByRole("button", { name: "Later", exact: true })).toBeVisible();
+	await notice.getByRole("button", { name: "Reload", exact: true }).click();
+	healthy = false;
+	await page.getByRole("button", { name: "Clear Cache & Reload", exact: true }).click();
+	await expect(page.getByRole("alert")).toHaveText("Could not check the update. Check your connection and try again.");
+	await expect(page).toHaveURL(/\/game-over$/);
+	healthy = true;
+	await page.getByRole("button", { name: "Clear Cache & Reload", exact: true }).click();
+	await expect(page.getByRole("button", { name: /Play Online Challenge/ })).toBeVisible();
+	await expect(page).toHaveURL(test.info().project.use.baseURL + "/");
+	expect(await page.evaluate(() => [localStorage.getItem("update-saved-setting"), localStorage.getItem("matchimus-device-id")])).toEqual(["keep-me", device]);
+	// Only health was simulated: the same actual bundle loaded. Do not claim the
+	// offered build was installed; the receipt must report that exact outcome.
+	await expect.poll(async () => (await diagnostics(page)).some(row => row.message === "mm.app.update" && row.context.phase === "reload-outcome" && row.context.outcome === "previous-build-loaded")).toBe(true);
+});
