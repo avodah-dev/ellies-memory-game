@@ -545,16 +545,26 @@ test("a flying matched card cannot intercept a press on the next playable card",
 				}))
 				.sort((a, b) => b.y - a.y)[0].id,
 	);
+	// Freeze only this decorative animation before it mounts. Slow CI/WebKit can
+	// otherwise finish the flight between the visibility check and geometry read.
+	await page.addStyleTag({
+		content: ".card-fly-to-player { animation-play-state: paused !important; }",
+	});
 	await card(page, bottom).click();
 	await card(page, bottom ^ 1).click();
 	await expect(page.locator(".card-fly-to-player").first()).toBeVisible();
-	// Find a real flight crossing a playable card, then hold that animation frame
-	// to deliver native input deterministically through the visual decoration.
+	// Scrub the actual flight keyframes until they cover a playable card center;
+	// preserve its real geometry and deliver native input through that decoration.
 	const point = await page.evaluate(async () => {
-		const end = performance.now() + 2000;
-		while (performance.now() < end) {
+		const flights = [...document.querySelectorAll(".card-fly-to-player")];
+		const animations = flights.flatMap((f) => f.getAnimations());
+		if (!animations.length) throw Error("No flight animation to inspect");
+		for (let percent = 1; percent < 100; percent++) {
+			for (const animation of animations) {
+				const duration = Number(animation.effect!.getComputedTiming().duration);
+				animation.currentTime = (duration * percent) / 100;
+			}
 			await new Promise(requestAnimationFrame);
-			const flights = [...document.querySelectorAll(".card-fly-to-player")];
 			for (const card of document.querySelectorAll(
 				'main [role="application"] button[data-card-id]:enabled',
 			)) {
