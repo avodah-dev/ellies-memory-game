@@ -413,7 +413,7 @@ test("two simultaneous touch contacts flip on down once, then mouse and keyboard
 	expect(activations.map((row) => row.context.source)).toEqual([
 		"pointerdown",
 		"pointerdown",
-		"click",
+		"pointerdown",
 		"click",
 	]);
 	expect(new Set(activations.map((row) => row.context.input_id)).size).toBe(4);
@@ -437,6 +437,84 @@ test("two simultaneous touch contacts flip on down once, then mouse and keyboard
 			"pointerdown",
 		]);
 	}
+});
+
+test("primary mouse press flips before release, drag-off stays flipped, keyboard remains native", async ({
+	page,
+	context,
+}) => {
+	await localRequestsOnly(context);
+	await home(page);
+	await page.getByRole("button", { name: /Same Device Play/ }).click();
+	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
+	await page.getByRole("button", { name: "4 4×2 Easy" }).click();
+	await page
+		.getByRole("button", { name: "🎮 Start Game", exact: true })
+		.click();
+	await expect(page).toHaveURL(/\/local\/game$/);
+	for (const button of ["middle", "right"] as const) {
+		await card(page, 0).click({ button });
+		await expect(card(page, 0)).toHaveAttribute("aria-pressed", "false");
+	}
+	await card(page, 0).hover();
+	await page.mouse.down();
+	await expect(card(page, 0)).toHaveAttribute("aria-pressed", "true");
+	await page.mouse.up();
+	await card(page, 1).focus();
+	await page.keyboard.press("Enter");
+	await expect(card(page, 0)).toHaveCount(0);
+	await card(page, 2).hover();
+	await page.mouse.down();
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await page.mouse.move(1, 1);
+	await page.mouse.up();
+	await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+	await card(page, 3).focus();
+	await page.keyboard.press("Space");
+	await expect(card(page, 2)).toHaveCount(0);
+	await match(page, 4);
+	await card(page, 6).focus();
+	await page.keyboard.press("Enter");
+	await card(page, 7).focus();
+	await page.keyboard.press("Space");
+	await expect(page).toHaveURL(/\/game-over$/);
+	await expect
+		.poll(
+			async () =>
+				(await diagnostics(page)).filter(
+					(row) => row.message === "mm.game.flip",
+				).length,
+		)
+		.toBe(8);
+	const events = await diagnostics(page);
+	const activations = events.filter(
+		(row) => row.message === "mm.input.activation",
+	);
+	expect(activations.map((row) => row.context.source)).toEqual([
+		"pointerdown",
+		"click",
+		"pointerdown",
+		"click",
+		"pointerdown",
+		"pointerdown",
+		"click",
+		"click",
+	]);
+	expect(new Set(activations.map((row) => row.context.input_id)).size).toBe(8);
+	expect(
+		events
+			.filter((row) => row.message === "mm.game.flip")
+			.every((row) => row.context.result === "accepted"),
+	).toBe(true);
+	expect(
+		events
+			.filter(
+				(row) =>
+					row.message === "mm.input.click" &&
+					row.context.pointer_type === "mouse",
+			)
+			.every((row) => row.context.activation_suppressed === true),
+	).toBe(true);
 });
 
 test("named players start a 16-pair Thanksgiving game with strict rules", async ({

@@ -29,6 +29,7 @@ export interface ClickDecision {
 	association: "pointer-id" | "released-contact" | "ambiguous" | "none";
 }
 const direct = (type: string) => type === "touch" || type === "pen";
+const onPress = (type: string) => direct(type) || type === "mouse";
 let gestureSerial = 0;
 
 export function createCardInput(now = () => performance.now()) {
@@ -54,7 +55,7 @@ export function createCardInput(now = () => performance.now()) {
 				x: event.clientX,
 				y: event.clientY,
 				cancelled: false,
-				handled: direct(event.pointerType) && event.button === 0,
+				handled: onPress(event.pointerType) && event.button === 0,
 				inputId: null,
 			};
 			gestures.set(event.pointerId, gesture);
@@ -121,10 +122,10 @@ export function createCardInput(now = () => performance.now()) {
 				} else if (candidates.length > 1) association = "ambiguous";
 			}
 			if (gesture) gestures.delete(gesture.pointerId);
-			// Direct contacts were already attempted on down, even if rejected by
+			// Pointer contacts were already attempted on down, even if rejected by
 			// game rules. A later click must not retry the move in a different turn.
 			// A real mouse down replaces lastPointerType; no time-based click ban.
-			return { activate: !direct(type), type, gesture, association };
+			return { activate: !onPress(type), type, gesture, association };
 		},
 	};
 }
