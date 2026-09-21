@@ -131,8 +131,22 @@ export const CardLightbox = ({
 	currentIndex = 0,
 	onNavigate,
 }: CardLightboxProps) => {
-	const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(
-		null,
+	// Input can arrive before React paints the preceding event. Keep gesture
+	// decisions synchronous; state below controls only the rendered animation.
+	const gestureRef = useRef<{
+		x: number;
+		y: number;
+		offset: number;
+		started: number;
+	} | null>(null);
+	const animationGeneration = useRef(0);
+	const transitionActive = useRef(false);
+	useEffect(
+		() => () => {
+			++animationGeneration.current;
+			gestureRef.current = null;
+		},
+		[],
 	);
 	const [swipeOffset, setSwipeOffset] = useState(0);
 	const [isSwiping, setIsSwiping] = useState(false);
@@ -145,7 +159,6 @@ export const CardLightbox = ({
 	// Incoming card state
 	const [incomingOffset, setIncomingOffset] = useState(0);
 
-	const touchStartTimeRef = useRef<number>(0);
 	const cardContainerRef = useRef<HTMLDivElement>(null);
 	const { speak, isAvailable } = useTextToSpeech();
 
@@ -167,12 +180,14 @@ export const CardLightbox = ({
 
 	// Trigger a transition with both cards animating
 	const triggerTransition = useCallback(
-		(direction: "left" | "right", nextIndex: number) => {
-			if (!card || !onNavigate) return;
+		(direction: "left" | "right", nextIndex: number, startOffset = 0) => {
+			if (!card || !onNavigate || transitionActive.current) return;
+			transitionActive.current = true;
+			const generation = ++animationGeneration.current;
 
 			// Store current card as outgoing
 			setOutgoingCard(card);
-			setOutgoingOffset(swipeOffset); // Start from current position
+			setOutgoingOffset(startOffset);
 
 			// Set target for outgoing card (exit direction)
 			const exitOffset = direction === "right" ? -screenWidth : screenWidth;
@@ -187,9 +202,11 @@ export const CardLightbox = ({
 
 			// Start animations on next frame
 			requestAnimationFrame(() => {
+				if (generation !== animationGeneration.current) return;
 				setOutgoingOffset(exitOffset); // Animate outgoing card off-screen
 
 				requestAnimationFrame(() => {
+					if (generation !== animationGeneration.current) return;
 					setIsPositioning(false);
 					setIncomingOffset(0); // Animate incoming card to center
 					setSwipeOffset(0);
@@ -198,11 +215,13 @@ export const CardLightbox = ({
 
 			// Clean up outgoing card after animation
 			setTimeout(() => {
+				if (generation !== animationGeneration.current) return;
+				transitionActive.current = false;
 				setOutgoingCard(null);
 				setOutgoingOffset(0);
 			}, transitionTime + 50);
 		},
-		[card, onNavigate, swipeOffset, screenWidth],
+		[card, onNavigate, screenWidth],
 	);
 
 	useEffect(() => {
@@ -251,41 +270,57 @@ export const CardLightbox = ({
 
 	// Handle touch start
 	const onTouchStart = (e: React.TouchEvent) => {
-		if (isTransitioning) return;
+		if (transitionActive.current) return;
 		const touch = e.touches[0];
-		touchStartTimeRef.current = Date.now();
-		setTouchStart({
+		++animationGeneration.current;
+		gestureRef.current = {
 			x: touch.clientX,
 			y: touch.clientY,
-		});
+			offset: 0,
+			started: Date.now(),
+		};
+		setIsPositioning(false);
+		setSwipeOffset(0);
 		setIsSwiping(true);
 	};
 
 	// Handle touch move - card follows finger
 	const onTouchMove = (e: React.TouchEvent) => {
-		if (!touchStart || isTransitioning) return;
+		const touchStart = gestureRef.current;
+		if (!touchStart || transitionActive.current) return;
 		const touch = e.touches[0];
 		const deltaX = touch.clientX - touchStart.x;
 		const deltaY = touch.clientY - touchStart.y;
 
 		// If vertical movement dominates, don't swipe horizontally
-		if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(swipeOffset) < 10) {
+		if (
+			Math.abs(deltaY) > Math.abs(deltaX) &&
+			Math.abs(touchStart.offset) < 10
+		) {
 			return;
 		}
 
+		touchStart.offset = deltaX;
 		setSwipeOffset(deltaX);
 	};
 
 	// Handle touch end - snap or spring back
 	const onTouchEnd = () => {
-		if (!touchStart || !canNavigate || !onNavigate || isTransitioning) {
-			setTouchStart(null);
+		const touchStart = gestureRef.current;
+		gestureRef.current = null;
+		if (
+			!touchStart ||
+			!canNavigate ||
+			!onNavigate ||
+			transitionActive.current
+		) {
 			setIsSwiping(false);
 			setSwipeOffset(0);
 			return;
 		}
 
-		const elapsed = Date.now() - touchStartTimeRef.current;
+		const swipeOffset = touchStart.offset;
+		const elapsed = Date.now() - touchStart.started;
 		const velocity = Math.abs(swipeOffset) / elapsed;
 		const isLeftSwipe =
 			swipeOffset < -minSwipeDistance ||
@@ -294,19 +329,24 @@ export const CardLightbox = ({
 			swipeOffset > minSwipeDistance ||
 			(swipeOffset > 20 && velocity > velocityThreshold);
 
-		setTouchStart(null);
 		setIsSwiping(false);
 
 		if (isLeftSwipe) {
 			const nextIndex = currentIndex < cards.length - 1 ? currentIndex + 1 : 0;
-			triggerTransition("right", nextIndex);
+			triggerTransition("right", nextIndex, swipeOffset);
 		} else if (isRightSwipe) {
 			const prevIndex = currentIndex > 0 ? currentIndex - 1 : cards.length - 1;
-			triggerTransition("left", prevIndex);
+			triggerTransition("left", prevIndex, swipeOffset);
 		} else {
 			// Spring back to center
 			setSwipeOffset(0);
 		}
+	};
+	const onTouchCancel = () => {
+		if (!gestureRef.current) return;
+		gestureRef.current = null;
+		setIsSwiping(false);
+		setSwipeOffset(0);
 	};
 
 	if (!isOpen || !card) return null;
@@ -433,6 +473,7 @@ export const CardLightbox = ({
 				onTouchStart={onTouchStart}
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
+				onTouchCancel={onTouchCancel}
 				role="region"
 				aria-label="Card display"
 			>
