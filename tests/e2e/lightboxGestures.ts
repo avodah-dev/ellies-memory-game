@@ -1,4 +1,15 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+type GestureEvidence = {
+	type: string;
+	trusted: boolean;
+	time: number;
+	target: string;
+	touches: { id: number; x: number; y: number }[];
+	changed: { id: number; x: number; y: number }[];
+	visibility: string;
+	cards: { transform: string; transition: string; text: string | null }[];
+};
 
 // Pinned Playwright 1.63 WebKit protocol. This uses the browser input agent,
 // not DOM dispatchEvent; the assertions below require trusted touch events.
@@ -21,16 +32,36 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 	const first = await heading.innerText();
 	await display.evaluate((el) => {
 		const target = el as HTMLElement & {
-			recordedTouches: { type: string; trusted: boolean }[];
+			recordedTouches: GestureEvidence[];
 		};
 		target.recordedTouches = [];
 		for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"])
-			el.addEventListener(type, (event) =>
+			el.addEventListener(type, (event) => {
+				const touch = event as TouchEvent;
+				const points = (list: TouchList) =>
+					Array.from(list, (p) => ({
+						id: p.identifier,
+						x: p.clientX,
+						y: p.clientY,
+					}));
 				target.recordedTouches.push({
 					type: event.type,
 					trusted: event.isTrusted,
-				}),
-			);
+					time: performance.now(),
+					target: (event.target as Element).tagName,
+					touches: points(touch.touches),
+					changed: points(touch.changedTouches),
+					visibility: document.visibilityState,
+					cards: Array.from(el.children, (child) => {
+						const style = getComputedStyle(child);
+						return {
+							transform: style.transform,
+							transition: style.transition,
+							text: child.querySelector("h2")?.textContent ?? null,
+						};
+					}),
+				});
+			});
 	});
 	const chromium =
 		browser === "chromium" ? await page.context().newCDPSession(page) : null;
@@ -110,6 +141,16 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 		expect(events.every((e) => e.trusted)).toBe(true);
 		expect(events.filter((e) => e.type === "touchcancel")).toHaveLength(0);
 	} finally {
+		await test.info().attach("native-lightbox-gestures", {
+			body: JSON.stringify(
+				await display.evaluate(
+					(el) =>
+						(el as HTMLElement & { recordedTouches: GestureEvidence[] })
+							.recordedTouches,
+				),
+			),
+			contentType: "application/json",
+		});
 		await chromium?.detach();
 	}
 }
