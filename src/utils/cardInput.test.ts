@@ -79,7 +79,7 @@ it("does not manufacture links for ambiguous, cancelled, expired or wrong-type g
 		input.click(click({ pointerId: 3, pointerType: "mouse" })),
 	).toMatchObject({ activate: false, gesture: { cancelled: true } });
 });
-it("keeps mouse, keyboard and assistive clicks immediately after touch; no suppression timeout", () => {
+it("keeps mouse press and keyboard/assistive clicks immediately after touch", () => {
 	const input = createCardInput();
 	input.down(pointer());
 	input.end(pointer(), false);
@@ -88,9 +88,12 @@ it("keeps mouse, keyboard and assistive clicks immediately after touch; no suppr
 		type: "keyboard",
 		gesture: null,
 	});
-	input.down(pointer(4, "mouse"));
+	expect(input.down(pointer(4, "mouse")).handled).toBe(true);
 	input.end(pointer(4, "mouse"), false);
-	expect(input.click(click())).toMatchObject({ activate: true, type: "mouse" });
+	expect(input.click(click())).toMatchObject({
+		activate: false,
+		type: "mouse",
+	});
 	expect(createCardInput().click(click())).toMatchObject({
 		activate: true,
 		type: "unknown",
@@ -114,7 +117,7 @@ it("accepts pen tip only, suppresses direct clicks even with no surviving contac
 	).toBeNull();
 });
 
-it("suppresses WebKit's native mouse-labelled click after touch, without suppressing a real mouse", () => {
+it("suppresses WebKit's native mouse-labelled click after touch and a real mouse's release click", () => {
 	const input = createCardInput();
 	const g = input.down(pointer(0));
 	input.end(pointer(0), false);
@@ -126,9 +129,33 @@ it("suppresses WebKit's native mouse-labelled click after touch, without suppres
 		gesture: { id: g.id },
 		association: "released-contact",
 	});
-	input.down(pointer(1, "mouse"));
+	expect(input.down(pointer(1, "mouse")).handled).toBe(true);
 	input.end(pointer(1, "mouse"), false);
 	expect(
 		input.click(click({ pointerId: 1, pointerType: "mouse" })),
-	).toMatchObject({ activate: true, type: "mouse", association: "pointer-id" });
+	).toMatchObject({
+		activate: false,
+		type: "mouse",
+		association: "pointer-id",
+	});
+});
+
+it("ignores secondary mouse buttons and never retries a mouse press on a late click", () => {
+	let now = 0;
+	const input = createCardInput(() => now);
+	for (const button of [1, 2]) {
+		expect(input.down({ ...pointer(1, "mouse"), button }).handled).toBe(false);
+		expect(input.click(click({ pointerType: "mouse", button })).activate).toBe(
+			false,
+		);
+	}
+	expect(input.down(pointer(1, "mouse")).handled).toBe(true);
+	input.end(pointer(1, "mouse"), false);
+	now = 2000;
+	expect(
+		input.click(click({ pointerType: "mouse", pointerId: 1 })),
+	).toMatchObject({
+		activate: false,
+		gesture: null,
+	});
 });

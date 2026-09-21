@@ -74,7 +74,7 @@ it("activates two fingers on down, retains per-contact telemetry and suppresses 
 		}),
 	]);
 });
-it("keeps mouse activation on click and keyboard activation after touch", () => {
+it("activates mouse on primary press once and keyboard on click after touch", () => {
 	const action = vi.fn();
 	render(<Card card={data} onClick={action} />);
 	const target = screen.getByRole("button");
@@ -82,11 +82,30 @@ it("keeps mouse activation on click and keyboard activation after touch", () => 
 	pointer(target, "cancel", 1);
 	expect(action).toHaveBeenCalledTimes(1); // Nathan accepts no undo on pan/cancel
 	pointer(target, "down", 3, "mouse");
+	expect(action).toHaveBeenCalledTimes(2);
 	pointer(target, "up", 3, "mouse");
-	expect(action).toHaveBeenCalledTimes(1);
 	fireEvent.click(target, { detail: 1 });
+	expect(action).toHaveBeenCalledTimes(2);
 	fireEvent.click(target, { detail: 0 });
 	expect(action).toHaveBeenCalledTimes(3);
+});
+it("ignores middle/right mouse presses and keeps a dragged-off primary press activated once", () => {
+	const action = vi.fn();
+	render(<Card card={data} onClick={action} />);
+	const target = screen.getByRole("button");
+	pointer(target, "down", 1, "mouse", 1);
+	pointer(target, "up", 1, "mouse", 1);
+	pointer(target, "down", 1, "mouse", 2);
+	pointer(target, "up", 1, "mouse", 2);
+	expect(action).not.toHaveBeenCalled();
+	pointer(target, "down", 1, "mouse");
+	expect(action).toHaveBeenCalledTimes(1);
+	fireEvent.pointerLeave(target);
+	pointer(document.body, "up", 1, "mouse");
+	expect(action).toHaveBeenCalledTimes(1);
+	// Even a later compatibility click must not retry a rejected press.
+	fireEvent.click(target, { detail: 1 });
+	expect(action).toHaveBeenCalledTimes(1);
 });
 it("accepts pen tip, ignores pen secondary button and matched cards", () => {
 	const action = vi.fn();
