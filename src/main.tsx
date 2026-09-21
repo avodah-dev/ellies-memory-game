@@ -1,3 +1,4 @@
+import { startInputCapture } from "./services/telemetry/inputCapture";
 import { setPerformanceRoute } from "./services/telemetry/samplers";
 import { createRoot } from "react-dom/client";
 import "./index.css";
@@ -36,6 +37,7 @@ async function main() {
 		}
 	}
 	startTelemetry(config);
+	startInputCapture(config);
 	track("mm.app.boot", {
 		phase: "runtime-ready",
 		ms_elapsed: performance.now() - bootStart,

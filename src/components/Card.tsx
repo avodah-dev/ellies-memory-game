@@ -1,3 +1,4 @@
+import { markCardInput } from "../services/telemetry/inputCapture";
 import { useState } from "react";
 import { createCardInput } from "../utils/cardInput";
 import { counters } from "../services/telemetry/core";
@@ -64,12 +65,14 @@ export const Card = ({
 			data-allow-touchmove
 			onPointerDown={(event) => {
 				const gesture = input.down(event);
+				markCardInput(event.nativeEvent, card.id, gesture.id);
 				trackPointer(card.id, "down", event, gesture);
 				if (gesture.handled && !card.isMatched) {
 					trackCardActivation(card.id, "pointerdown", gesture.type, gesture);
 					onClick();
 				}
 			}}
+			onTouchStart={(event) => markCardInput(event.nativeEvent, card.id, null)}
 			onPointerUp={(event) =>
 				trackPointer(card.id, "up", event, input.end(event, false))
 			}
@@ -98,7 +101,8 @@ export const Card = ({
 					card.isFlipped || card.isMatched
 						? "rotateY(180deg)"
 						: "rotateY(0deg)",
-				pointerEvents: "auto",
+				// Decorative flight parents must also exclude every card face from hit testing.
+				pointerEvents: "inherit",
 				userSelect: "none", // Prevent text selection for snappier feel
 				touchAction: "manipulation", // Optimize touch interactions on mobile
 			}}
