@@ -10,8 +10,32 @@ concurrency:
   group: fly-${{ github.ref_name }}
   cancel-in-progress: false
 jobs:
-  release:
+  prepare:
     if: github.ref_name == 'main' || github.ref_name == 'staging'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 3
+    outputs:
+      found: ${{ steps.verified.outputs.found }}
+      tree: ${{ steps.verified.outputs.tree }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Find successful verification for this exact tree
+        id: verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/artifacts.mjs find
+  suite:
+    needs: prepare
+    if: needs.prepare.outputs.found != 'true'
+    uses: ./.github/workflows/verification-suite.yml
+    with:
+      commit: ${{ github.sha }}
+      allow_docs_only: false
+  release:
+    needs: [prepare, suite]
+    if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.found == 'true' || needs.suite.result == 'success')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     environment: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
@@ -26,30 +50,25 @@ jobs:
         with:
           persist-credentials: false
       - name: Find an image verified for this exact tree
+        if: needs.prepare.outputs.found == 'true'
         id: verified
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/artifacts.mjs restore
-      - if: steps.verified.outputs.found != 'true'
-        uses: ./.github/actions/verification-setup
+      - name: Require the retained image to remain available
+        if: needs.prepare.outputs.found == 'true'
+        env:
+          FOUND: ${{ steps.verified.outputs.found }}
+        run: test "$FOUND" = true
+      - name: Download image qualified by this run's parallel suite
+        if: needs.prepare.outputs.found != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          full: 'true'
-      - name: Full release gate when no verified image exists
-        if: steps.verified.outputs.found != 'true'
-        run: |
-          node --test scripts/ci/*.test.mjs
-          bun run verify:release
-          node scripts/ci/artifacts.mjs save
-      - name: Retain newly verified image
-        if: steps.verified.outputs.found != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: verified-image-${{ steps.verified.outputs.tree }}
+          name: verified-image-${{ needs.prepare.outputs.tree }}
           path: ${{ env.VERIFIED_IMAGE_DIR }}/
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
+      - name: Validate and load the exact image qualified in this run
+        if: needs.prepare.outputs.found != 'true'
+        run: node scripts/ci/artifacts.mjs load
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
         with:
           version: 0.4.99

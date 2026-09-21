@@ -1,0 +1,155 @@
+name: Verification lanes
+on:
+  workflow_call:
+    inputs:
+      commit:
+        type: string
+        required: true
+      base_commit:
+        type: string
+        default: ''
+      allow_docs_only:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 3
+    outputs:
+      tree: ${{ steps.source.outputs.tree }}
+      docs_only: ${{ steps.source.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        env:
+          BASE_COMMIT: ${{ inputs.allow_docs_only && inputs.base_commit || '' }}
+        run: node scripts/ci/artifacts.mjs metadata
+  checks:
+    needs: source
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/verification-setup
+        with:
+          full: ${{ needs.source.outputs.docs_only != 'true' }}
+          browsers: 'false'
+          docker: 'false'
+      - run: node --test scripts/ci/*.test.mjs
+      - if: needs.source.outputs.docs_only != 'true'
+        run: bun scripts/local.ts checks
+      - if: needs.source.outputs.docs_only == 'true'
+        run: bun run check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: verification-checks
+          path: |
+            coverage/
+            *-debug.log
+          retention-days: 7
+  vite:
+    needs: source
+    if: needs.source.outputs.docs_only != 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/verification-setup
+        with:
+          full: 'true'
+          docker: 'false'
+      - run: bun scripts/local.ts vite
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: verification-vite
+          path: |
+            playwright-report/
+            test-results/
+            *-debug.log
+          retention-days: 7
+  container:
+    needs: source
+    if: needs.source.outputs.docs_only != 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 12
+    steps:
+      - run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/candidate-image" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/verification-setup
+        with:
+          full: 'true'
+      - run: bun scripts/local.ts container
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: node scripts/ci/artifacts.mjs save
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          name: candidate-image-${{ needs.source.outputs.tree }}
+          path: ${{ env.VERIFIED_IMAGE_DIR }}/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: verification-container
+          path: |
+            playwright-report/
+            test-results/
+            *-debug.log
+          retention-days: 7
+  qualify:
+    needs: [source, checks, vite, container]
+    if: always()
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/verified-image" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Require every verification lane
+        env:
+          SOURCE_RESULT: ${{ needs.source.result }}
+          DOCS_ONLY: ${{ needs.source.outputs.docs_only }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          VITE_RESULT: ${{ needs.vite.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
+        run: |
+          test "$SOURCE_RESULT" = success
+          node scripts/ci/artifacts.mjs gate
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        with:
+          name: candidate-image-${{ needs.source.outputs.tree }}
+          path: ${{ env.VERIFIED_IMAGE_DIR }}/
+      - name: Validate candidate from this run and exact revision
+        if: needs.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: node scripts/ci/artifacts.mjs validate
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: needs.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        with:
+          name: verified-image-${{ needs.source.outputs.tree }}
+          path: ${{ env.VERIFIED_IMAGE_DIR }}/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

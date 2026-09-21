@@ -8,54 +8,20 @@ concurrency:
   group: verify-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  suite:
+    uses: ./.github/workflows/verification-suite.yml
+    with:
+      commit: ${{ github.event.pull_request.head.sha || github.sha }}
+      base_commit: ${{ github.event.pull_request.base.sha || '' }}
+      allow_docs_only: true
   verify:
+    # Preserve the exact required branch-protection status, including failure/skips.
+    needs: suite
+    if: always()
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 2
     steps:
-      - name: Set artifact directory
-        run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/verified-image" >> "$GITHUB_ENV"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          # Verify the publishable revision; branch protection requires it up to date.
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Classify changes
-        id: source
+      - name: Require the complete suite
         env:
-          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/ci/artifacts.mjs metadata
-      - uses: ./.github/actions/verification-setup
-        with:
-          full: ${{ steps.source.outputs.docs_only != 'true' }}
-      - name: Verify artifact promotion policy
-        run: node --test scripts/ci/*.test.mjs
-      - name: Full release gate
-        if: steps.source.outputs.docs_only != 'true'
-        run: bun run verify:release
-      - name: Docs-only checks (no deployable image)
-        if: steps.source.outputs.docs_only == 'true'
-        run: bun run check
-      - name: Export the tested image
-        if: steps.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        run: node scripts/ci/artifacts.mjs save
-      - name: Retain verified image for promotion
-        if: steps.source.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: verified-image-${{ steps.source.outputs.tree }}
-          path: ${{ env.VERIFIED_IMAGE_DIR }}/
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: verification-reports
-          path: |
-            coverage/
-            playwright-report/
-            test-results/
-            *-debug.log
-          retention-days: 7
+          SUITE_RESULT: ${{ needs.suite.result }}
+        run: test "$SUITE_RESULT" = success
