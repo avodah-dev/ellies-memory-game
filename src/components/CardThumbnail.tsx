@@ -1,3 +1,4 @@
+import { isCardImageSource } from "../utils/cardImage";
 import type { Card } from "../types";
 
 interface CardThumbnailProps {
@@ -15,13 +16,7 @@ export function CardThumbnail({
 	useWhiteBackground,
 	emojiSizePercentage,
 }: CardThumbnailProps) {
-	const isImage =
-		card.imageUrl &&
-		(card.imageUrl.startsWith("http") ||
-			card.imageUrl.startsWith("/") ||
-			card.imageUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
-			card.imageUrl.includes("blob:") ||
-			card.imageUrl.includes("data:"));
+	const isImage = isCardImageSource(card.imageUrl);
 	return (
 		<span
 			aria-hidden="true"

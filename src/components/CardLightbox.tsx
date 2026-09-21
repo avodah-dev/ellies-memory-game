@@ -1,3 +1,4 @@
+import { isCardImageSource } from "../utils/cardImage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CARD_DECKS } from "../data/cardDecks";
 import { useTextToSpeech } from "../hooks/useTextToSpeech";
@@ -32,18 +33,6 @@ const formatCardName = (imageId: string): string => {
 		.join(" ");
 };
 
-// Helper to check if imageUrl is an actual image
-const isImageUrl = (url: string | undefined): boolean => {
-	return !!(
-		url &&
-		(url.startsWith("http") ||
-			url.startsWith("/") ||
-			url.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
-			url.includes("blob:") ||
-			url.includes("data:"))
-	);
-};
-
 // Reusable card content component
 const CardContent = ({
 	card,
@@ -56,7 +45,7 @@ const CardContent = ({
 	speak: (text: string) => void;
 	isAvailable: () => boolean;
 }) => {
-	const isImage = isImageUrl(card.imageUrl);
+	const isImage = isCardImageSource(card.imageUrl);
 
 	return (
 		<>
