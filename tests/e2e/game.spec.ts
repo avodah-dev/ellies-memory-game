@@ -1080,9 +1080,15 @@ test("a served build change offers an explicit reload without interrupting play"
 		return localStorage.getItem("matchimus-device-id");
 	});
 	let healthy = true;
+	// Finish boot/round-boundary traffic before simulating a deploy. Otherwise
+	// pageshow may correctly coalesce into an earlier, unchanged health request.
+	await page.waitForLoadState("networkidle");
 	await context.route("**/healthz", route => route.fulfill({ status: healthy ? 200 : 503, contentType: "application/json", body: JSON.stringify({ status: "ok", commit: "b".repeat(40), environment: "emulator" }) }));
 	// Exercise the real registered lifecycle trigger with a changed same-origin response.
-	await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+	await Promise.all([
+		page.waitForRequest("**/healthz"),
+		page.evaluate(() => window.dispatchEvent(new Event("pageshow"))),
+	]);
 	const notice = page.getByRole("complementary", { name: "App update" });
 	await expect(notice).toBeVisible();
 	await card(page, 0).click();

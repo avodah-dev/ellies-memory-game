@@ -35,7 +35,7 @@ jobs:
       allow_docs_only: false
   release:
     needs: [prepare, suite]
-    if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.found == 'true' || needs.suite.result == 'success')
+    if: always() && !cancelled() && needs.prepare.result == 'success' && (needs.prepare.outputs.found == 'true' || needs.suite.result == 'success')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     environment: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
