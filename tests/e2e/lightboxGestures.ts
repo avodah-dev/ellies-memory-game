@@ -107,7 +107,8 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 		await send("touchEnd", start + direction * box.width * 0.7, y);
 		await expect(heading).toHaveCount(1);
 	};
-	let assertionFailed = false;
+	let assertionFailure: { error: unknown } | undefined;
+	let evidenceFailure: { error: unknown } | undefined;
 	try {
 		await swipe(-1);
 		await expect(heading).not.toHaveText(first);
@@ -142,8 +143,7 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 		expect(events.every((e) => e.trusted)).toBe(true);
 		expect(events.filter((e) => e.type === "touchcancel")).toHaveLength(0);
 	} catch (error) {
-		assertionFailed = true;
-		throw error;
+		assertionFailure = { error };
 	} finally {
 		try {
 			// Read immediately: a missing lightbox must not start another locator wait.
@@ -159,10 +159,12 @@ export async function expectLightboxNavigation(page: Page, browser: string) {
 			});
 		} catch (error) {
 			// Preserve the original failure if the browser closed or evidence failed.
-			if (!assertionFailed) throw error;
+			evidenceFailure = { error };
 		} finally {
 			// Detach even when evidence collection fails or the page has closed.
 			await chromium?.detach().catch(() => {});
 		}
 	}
+	if (assertionFailure) throw assertionFailure.error;
+	if (evidenceFailure) throw evidenceFailure.error;
 }
