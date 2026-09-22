@@ -31,7 +31,7 @@ import {
 	useCardBackSelector,
 } from "../hooks/useCardBackSelector";
 import { useCardPacks } from "../hooks/useCardPacks";
-import { useCursorSync } from "../hooks/useCursorSync";
+import { useCursorBroadcast } from "../hooks/useCursorBroadcast";
 import { useImagePreloader } from "../hooks/useImagePreloader";
 import { useLocalGame } from "../hooks/useLocalGame";
 import { useOnlineGame } from "../hooks/useOnlineGame";
@@ -634,26 +634,27 @@ export function useAppModel() {
 		isOnlineMode && gameState.gameStatus === "playing",
 	);
 	const {
-		opponentCursor,
 		handleMouseMove: handleCursorMove,
 		handleMouseLeave: handleCursorLeave,
-	} = useCursorSync({
+	} = useCursorBroadcast({
 		roomCode: roomCode || "",
 		localOdahId: odahId || "",
-		opponentOdahId,
 		enabled: cursorSyncEnabled,
 		cardSize,
 	});
 
-	// Build remote cursor data for GameBoard
-	const remoteCursorData = useMemo(() => {
-		if (!opponentCursor || !opponentInfo) return null;
+	// Only peer identity/display metadata crosses the app model. Position updates
+	// belong to the leaf overlay and must not publish the entire game model.
+	const remoteCursorPeer = useMemo(() => {
+		if (!cursorSyncEnabled || !roomCode || !opponentOdahId || !opponentInfo)
+			return null;
 		return {
-			position: opponentCursor,
+			roomCode,
+			opponentOdahId,
 			playerName: opponentInfo.name,
 			playerColor: opponentInfo.color,
 		};
-	}, [opponentCursor, opponentInfo]);
+	}, [cursorSyncEnabled, roomCode, opponentOdahId, opponentInfo]);
 
 	const getActiveConfig = useCallback(() => {
 		if (isOnlineMode) {
@@ -1610,7 +1611,7 @@ export function useAppModel() {
 		cursorSyncEnabled,
 		handleCursorMove,
 		handleCursorLeave,
-		remoteCursorData,
+		remoteCursorPeer,
 		winner,
 		isTie,
 		handleResetClick,

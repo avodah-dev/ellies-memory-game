@@ -27,7 +27,7 @@ export function GameplayScreen() {
 		cursorSyncEnabled,
 		handleCursorMove,
 		handleCursorLeave,
-		remoteCursorData,
+		remoteCursorPeer,
 	} = model;
 	return (
 		<>
@@ -70,7 +70,7 @@ export function GameplayScreen() {
 								onCursorLeave={
 									cursorSyncEnabled ? handleCursorLeave : undefined
 								}
-								remoteCursor={remoteCursorData}
+								remoteCursorPeer={remoteCursorPeer}
 							/>
 						</div>
 					</div>
