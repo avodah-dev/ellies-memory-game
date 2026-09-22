@@ -12,7 +12,12 @@ import {
 	setupFirebaseMocks,
 } from "../test/mocks/firebase";
 import { resetStorageMocks, setupStorageMocks } from "../test/mocks/storage";
-import { createGuestPresence, createHostPresence } from "../test/testUtils";
+import {
+	createGuestPresence,
+	createHostPresence,
+	createTestRoom,
+} from "../test/testUtils";
+import { PresenceService } from "../services/sync/PresenceService";
 import {
 	selectCanStartGame,
 	selectIsConnected,
@@ -350,8 +355,114 @@ describe("onlineStore", () => {
 	// ============================================
 
 	describe("presence data", () => {
+		it.each(["presence-first", "membership-first"])(
+			"allows a replacement guest to start after the previous guest leaves (%s)",
+			async (order) => {
+				const store = useOnlineStore.getState();
+				await store.connect();
+				const host = useOnlineStore.getState().odahId!;
+				const code = await store.createRoom({
+					hostName: "Host",
+					hostColor: "blue",
+					cardPack: "animals",
+					background: "default",
+					cardBack: "default",
+					pairCount: 4,
+				});
+				const adapter = getMockFirestoreSyncAdapter();
+				const room = createTestRoom({
+					roomCode: code,
+					hostId: host,
+					playerSlots: { [host]: 1, departed: 2 },
+				});
+				adapter._simulateRoomUpdate(room);
+				store.subscribeToPresence(code);
+				const deliver = vi
+					.mocked(PresenceService.subscribeToRoomPresence)
+					.mock.calls.at(-1)![1];
+				const original = {
+					[host]: createHostPresence({ odahId: host }),
+					departed: createGuestPresence({ odahId: "departed" }),
+				};
+				deliver(original);
+				expect(selectCanStartGame(useOnlineStore.getState())).toBe(true);
+				// Firestore removes membership before RTDB marks the old guest offline.
+				adapter._simulateRoomUpdate({ ...room, playerSlots: { [host]: 1 } });
+				expect(selectOpponent(useOnlineStore.getState())).toBeNull();
+				expect(useOnlineStore.getState().opponentConnected).toBe(false);
+				expect(useOnlineStore.getState().opponentDisconnectedAt).toEqual(
+					expect.any(Number),
+				);
+				const replacement = {
+					...original,
+					departed: { ...original.departed, online: false },
+					replacement: createGuestPresence({
+						odahId: "replacement",
+						name: "New Guest",
+					}),
+				};
+				const membership = () =>
+					adapter._simulateRoomUpdate({
+						...room,
+						playerSlots: { [host]: 1, replacement: 2 },
+					});
+				if (order === "presence-first") {
+					deliver(replacement);
+					expect(selectCanStartGame(useOnlineStore.getState())).toBe(false);
+					membership();
+				} else {
+					membership();
+					expect(selectCanStartGame(useOnlineStore.getState())).toBe(false);
+					deliver(replacement);
+				}
+				expect(Object.keys(useOnlineStore.getState().presenceData)).toEqual([
+					host,
+					"replacement",
+				]);
+				expect(selectCanStartGame(useOnlineStore.getState())).toBe(true);
+				expect(selectOpponent(useOnlineStore.getState())?.name).toBe(
+					"New Guest",
+				);
+				expect(useOnlineStore.getState().opponentDisconnectedAt).toBeNull();
+				const presence = useOnlineStore.getState().presenceData;
+				adapter._simulateRoomUpdate({
+					...useOnlineStore.getState().room!,
+					lastActivity: Date.now() + 1000,
+				});
+				expect(useOnlineStore.getState().presenceData).toBe(presence);
+				// An old presence callback must not repopulate a room after leaving.
+				await store.leaveRoom();
+				deliver(replacement);
+				expect(useOnlineStore.getState().rawPresenceData).toEqual({});
+				expect(useOnlineStore.getState().presenceData).toEqual({});
+			},
+		);
+
+		it("keeps current offline members visible while excluding stale online records", () => {
+			useOnlineStore.setState({
+				odahId: "host",
+				room: createTestRoom({ playerSlots: { host: 1, guest: 2 } }),
+			});
+			useOnlineStore
+				.getState()
+				.setPresenceData({
+					host: createHostPresence({ odahId: "host" }),
+					departed: createGuestPresence({ odahId: "departed", online: true }),
+					guest: createGuestPresence({ odahId: "guest", online: false }),
+				});
+			expect(Object.keys(useOnlineStore.getState().presenceData)).toEqual([
+				"host",
+				"guest",
+			]);
+			expect(useOnlineStore.getState().opponentConnected).toBe(false);
+			expect(selectOpponent(useOnlineStore.getState())?.odahId).toBe("guest");
+		});
+
 		it("should set presence data", () => {
 			const { setPresenceData } = useOnlineStore.getState();
+			useOnlineStore.setState({
+				room: createTestRoom({ playerSlots: { "host-id": 1, "guest-id": 2 } }),
+			});
 
 			const presenceData = {
 				"host-id": createHostPresence(),
@@ -368,6 +479,11 @@ describe("onlineStore", () => {
 
 			await connect();
 			const { odahId } = useOnlineStore.getState();
+			useOnlineStore.setState({
+				room: createTestRoom({
+					playerSlots: { [odahId!]: 1, "opponent-id": 2 },
+				}),
+			});
 
 			// Set presence with opponent online
 			setPresenceData({
@@ -386,6 +502,11 @@ describe("onlineStore", () => {
 
 			await connect();
 			const { odahId } = useOnlineStore.getState();
+			useOnlineStore.setState({
+				room: createTestRoom({
+					playerSlots: { [odahId!]: 1, "opponent-id": 2 },
+				}),
+			});
 
 			// Set presence with opponent offline
 			setPresenceData({
@@ -543,6 +664,9 @@ describe("onlineStore", () => {
 			});
 
 			// Set both players as present
+			getMockFirestoreSyncAdapter()._simulateRoomUpdate(
+				createTestRoom({ playerSlots: { [odahId!]: 1, "guest-id": 2 } }),
+			);
 			setPresenceData({
 				[odahId!]: createHostPresence({ odahId: odahId!, online: true }),
 				"guest-id": createGuestPresence({ odahId: "guest-id", online: true }),
@@ -580,6 +704,11 @@ describe("onlineStore", () => {
 
 			await connect();
 			const { odahId } = useOnlineStore.getState();
+			useOnlineStore.setState({
+				room: createTestRoom({
+					playerSlots: { [odahId!]: 1, "opponent-id": 2 },
+				}),
+			});
 
 			setPresenceData({
 				[odahId!]: createHostPresence({ odahId: odahId! }),
@@ -601,6 +730,9 @@ describe("onlineStore", () => {
 
 			await connect();
 			const { odahId } = useOnlineStore.getState();
+			useOnlineStore.setState({
+				room: createTestRoom({ playerSlots: { [odahId!]: 1 } }),
+			});
 
 			setPresenceData({
 				[odahId!]: createHostPresence({

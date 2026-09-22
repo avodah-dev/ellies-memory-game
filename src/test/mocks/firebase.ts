@@ -88,6 +88,7 @@ export function createMockFirestoreSyncAdapter(
 				state.room = createTestRoom({
 					roomCode,
 					hostId: options.hostId,
+					playerSlots: { [options.hostId]: 1 },
 					config: {
 						cardPack: options.cardPack,
 						background: options.background,

@@ -347,15 +347,13 @@ export const WaitingRoom = ({
 									</p>
 									<div
 										className={`w-1.5 h-1.5 rounded-full ${
-											player.slot === 1 || opponentConnected
+											player.online
 												? "bg-green-500"
 												: "bg-gray-400 animate-pulse"
 										}`}
 									/>
 									<span className="text-xs text-gray-500">
-										{player.slot === 1 || opponentConnected
-											? "Online"
-											: "Connecting..."}
+										{player.online ? "Online" : "Connecting..."}
 									</span>
 								</div>
 							</div>
@@ -509,11 +507,13 @@ export const WaitingRoom = ({
 			{/* Helper text for host */}
 			{isHost && !canStart && (
 				<p className="text-xs text-gray-500">
-					{!hasOpponent
-						? "Waiting for another player to join..."
-						: !opponentConnected
-							? "Waiting for player to connect..."
-							: "Ready to start!"}
+					{isStarting
+						? "Starting game..."
+						: !hasOpponent
+							? "Waiting for another player to join..."
+							: !opponentConnected
+								? "Waiting for player to connect..."
+								: "Ready to start!"}
 				</p>
 			)}
 
