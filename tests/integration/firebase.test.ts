@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	EmailAuthProvider,
 	linkWithCredential,
@@ -35,6 +35,7 @@ import {
 	checkAndFinishGame,
 	endTurn,
 } from "../../src/services/game/GameEngine";
+import { PresenceService } from "../../src/services/sync/PresenceService";
 import { serializeGame } from "../../src/services/sync/stateProtocol";
 import type { GameState, OnlineGameState } from "../../src/types";
 import ports from "../../local-ports.json";
@@ -208,6 +209,57 @@ describe("real Firebase adapters and checked-in rules", () => {
 		expect(Object.keys((await host.a.getRoom(code))!.playerSlots)).toHaveLength(
 			2,
 		);
+	});
+	it("detaches the guest game listener before membership revocation while presence cleanup is pending", async () => {
+		const phases: string[] = [],
+			errors: Error[] = [];
+		const { host, guest, code } = await room({
+			...noopSyncObserver,
+			listener: (_room, phase) => phases.push(phase),
+		});
+		await host.a.startGame(code, initial());
+		let received = 0;
+		const stop = guest.a.subscribeToState(
+			() => {
+				received++;
+			},
+			(error) => errors.push(error),
+		);
+		await eventually(async () => received > 0);
+		const originalStop = PresenceService.prototype.stop;
+		let finishPresence!: () => void, enteredPresence!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			finishPresence = resolve;
+		});
+		const entered = new Promise<void>((resolve) => {
+			enteredPresence = resolve;
+		});
+		const spy = vi
+			.spyOn(PresenceService.prototype, "stop")
+			.mockImplementationOnce(async function (this: PresenceService) {
+				enteredPresence();
+				await gate;
+				await originalStop.call(this);
+			});
+		const leaving = guest.a.leaveRoom();
+		try {
+			await entered;
+			expect(
+				(await host.a.getRoom(code))!.playerSlots[guest.uid],
+			).toBeUndefined();
+			expect(phases).toEqual(["subscribe", "unsubscribe"]);
+			expect(errors).toEqual([]);
+			await expect(
+				getDocFromServer(doc(guest.c.db, "games", code)),
+			).rejects.toMatchObject({ code: "permission-denied" });
+		} finally {
+			finishPresence();
+			await leaving;
+			stop();
+			spy.mockRestore();
+		}
+		expect(errors).toEqual([]);
+		expect(phases).toEqual(["subscribe", "unsubscribe"]);
 	});
 	it("deletes a departed guest slot so another guest can join", async () => {
 		const { host, guest, code } = await room();
