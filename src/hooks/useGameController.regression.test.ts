@@ -133,12 +133,16 @@ describe("game lifecycle regressions", () => {
 		);
 		expect(result.current.gameState.currentPlayer).toBe(2);
 	});
-	it("pauses on failed writes and explicitly restores confirmed state", async () => {
+	it("pauses on failed writes and automatically restores confirmed state", async () => {
 		const initial = createTestOnlineGameState({ cards: createCardSet(2) });
+		let confirm!: (state: GameState) => void;
+		const confirmed = new Promise<GameState>((resolve) => {
+			confirm = resolve;
+		});
 		const adapter = {
 			subscribeToState: () => () => {},
 			setState: vi.fn().mockRejectedValue(new Error("Write denied")),
-			getState: vi.fn().mockResolvedValue(initial),
+			getState: vi.fn().mockReturnValue(confirmed),
 		} as unknown as ISyncAdapter;
 		const { result } = renderHook(() =>
 			useGameController(
@@ -155,7 +159,8 @@ describe("game lifecycle regressions", () => {
 		expect(result.current.syncError).toBe("Write denied");
 		act(() => result.current.flipCard("card-1"));
 		expect(result.current.gameState.cards[1].isFlipped).toBe(false);
-		await act(async () => result.current.resynchronize());
+		expect(adapter.getState).toHaveBeenCalledTimes(1);
+		await act(async () => confirm(initial));
 		expect(result.current.syncError).toBeNull();
 		expect(result.current.gameState).toEqual(initial);
 	});

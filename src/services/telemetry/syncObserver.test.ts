@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
 	instrumentAdapter,
+	isolateSyncObserver,
 	noopSyncObserver,
 	telemetrySyncObserver,
 } from "./syncObserver";
@@ -147,4 +148,61 @@ it("isolates every adapter observer hook, including a failed trace start", async
 	).not.toThrow();
 	expect(() => observer.listener("TEST", "unsubscribe", "one")).not.toThrow();
 	expect(fail).toHaveBeenCalledTimes(5);
+});
+
+it("measures atomic batches without inventing transaction reads or retries", () => {
+	let time = 20;
+	vi.spyOn(performance, "now").mockImplementation(() => time);
+	const write = telemetrySyncObserver.batchStart(
+		createTestOnlineGameState(),
+		"TEST",
+	);
+	expect(track).toHaveBeenLastCalledWith(
+		"mm.sync.write.start",
+		expect.objectContaining({
+			write_mode: "batch",
+			room_code: "TEST",
+			write_id: write.id,
+		}),
+	);
+	time = 70;
+	telemetrySyncObserver.batchEnd(write);
+	expect(track).toHaveBeenLastCalledWith(
+		"mm.sync.write.result",
+		expect.objectContaining({
+			write_mode: "batch",
+			ok: true,
+			ms_commit: 50,
+			error_code: null,
+		}),
+	);
+	const result = vi.mocked(track).mock.calls.at(-1)![1];
+	for (const field of [
+		"transaction_id",
+		"attempts",
+		"ms_get_game",
+		"ms_get_room",
+		"ms_tx_total",
+	])
+		expect(result).not.toHaveProperty(field);
+	telemetrySyncObserver.batchEnd(write, { code: "permission-denied" });
+	expect(track).toHaveBeenLastCalledWith(
+		"mm.sync.write.result",
+		expect.objectContaining({ ok: false, error_code: "permission-denied" }),
+	);
+});
+it("isolates throwing batch observers on both sides of the write", () => {
+	const fail = () => {
+		throw new Error("observer");
+	};
+	const startFails = isolateSyncObserver({
+		...noopSyncObserver,
+		batchStart: fail,
+	});
+	expect(startFails.batchStart(createTestOnlineGameState(), "TEST")).toBeNull();
+	expect(() => startFails.batchEnd(null)).not.toThrow();
+	const endFails = isolateSyncObserver({ ...noopSyncObserver, batchEnd: fail });
+	expect(() =>
+		endFails.batchEnd(endFails.batchStart(createTestOnlineGameState(), "TEST")),
+	).not.toThrow();
 });

@@ -53,7 +53,7 @@ import {
 } from "../services/game/GameEngine";
 import { useGameSynchronization } from "./useGameSynchronization";
 import type { ISyncAdapter } from "../services/sync/ISyncAdapter";
-import type { Card, GameState, OnlineGameState, Player } from "../types";
+import type { Card, GameState, Player } from "../types";
 
 // ============================================
 // Types
@@ -96,6 +96,7 @@ export interface UseGameControllerOptions {
 	syncAdapter?: ISyncAdapter;
 	/** Local player's slot (1 or 2) for online mode */
 	localPlayerSlot?: number;
+	localUserId?: string | null;
 	/** Room code for online mode */
 	roomCode?: string;
 	onlineReady?: boolean;
@@ -174,6 +175,7 @@ export function useGameController(
 		effectManager,
 		syncAdapter,
 		localPlayerSlot,
+		localUserId,
 		roomCode,
 		onlineReady = true,
 	} = options;
@@ -246,15 +248,14 @@ export function useGameController(
 		syncToFirestore,
 		pausedRef,
 		generation,
-		lastSyncedVersionRef,
-		localVersionRef,
-		lastGameRoundRef,
+		replaceRevision,
 		telemetryTrace,
 	} = useGameSynchronization({
 		isOnlineMode,
 		syncAdapter,
 		roomCode,
 		localPlayerSlot,
+		localUserId,
 		onlineReady,
 		gameState,
 		initialGameState,
@@ -613,23 +614,10 @@ export function useGameController(
 			setGameState(newState);
 
 			if (isOnlineMode) {
-				const onlineState = newState as OnlineGameState;
-				const version = onlineState.syncVersion || 0;
-				const gameRound = onlineState.gameRound || 0;
-				lastSyncedVersionRef.current = version;
-				localVersionRef.current = version;
-				lastGameRoundRef.current = gameRound;
+				replaceRevision(newState);
 			}
 		},
-		[
-			isOnlineMode,
-			setGameState,
-			generation,
-			lastSyncedVersionRef,
-			localVersionRef,
-			lastGameRoundRef,
-			telemetryTrace,
-		],
+		[isOnlineMode, setGameState, generation, replaceRevision, telemetryTrace],
 	);
 
 	const initializeGame = useCallback(

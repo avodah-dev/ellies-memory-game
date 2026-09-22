@@ -26,6 +26,8 @@ export interface RawSnapshot {
 	get(field: string): unknown;
 }
 export interface SyncObserver {
+	batchStart(state: GameState, room: string): WriteTrace;
+	batchEnd(write: WriteTrace, error?: unknown): void;
 	txStart(state: GameState, room: string): TransactionTrace;
 	txPhase(
 		tx: TransactionTrace,
@@ -46,6 +48,30 @@ export interface SyncObserver {
 const numeric = (value: unknown) =>
 	typeof value === "number" && Number.isFinite(value) ? value : null;
 export const telemetrySyncObserver: SyncObserver = {
+	batchStart(state, room) {
+		const write = { ...writeTrace(state), at: performance.now() };
+		track("mm.sync.write.start", {
+			...write.fields,
+			room_code: room,
+			write_id: write.id,
+			input_id: write.input,
+			write_mode: "batch",
+		});
+		return write;
+	},
+	batchEnd(write, error) {
+		const now = performance.now();
+		track("mm.sync.write.result", {
+			...write.fields,
+			write_id: write.id,
+			input_id: write.input,
+			write_mode: "batch",
+			ok: error === undefined,
+			error_code: error === undefined ? null : errorCode(error),
+			ms_commit: now - write.at,
+			ms_input_to_commit: write.inputAt === null ? null : now - write.inputAt,
+		});
+	},
 	txStart(state, room) {
 		const at = performance.now();
 		const value = {
@@ -155,6 +181,8 @@ export const telemetrySyncObserver: SyncObserver = {
 	},
 };
 export const noopSyncObserver: SyncObserver = {
+	batchStart: writeTrace,
+	batchEnd() {},
 	txStart(state) {
 		const at = performance.now();
 		return {
@@ -191,6 +219,16 @@ export function isolateSyncObserver(observer: SyncObserver) {
 		}
 	};
 	return {
+		batchStart(state: GameState, room: string): WriteTrace | null {
+			try {
+				return observer.batchStart(state, room);
+			} catch {
+				return null;
+			}
+		},
+		batchEnd(write: WriteTrace | null, error?: unknown) {
+			if (write !== null) observe(() => observer.batchEnd(write, error));
+		},
 		txStart(state: GameState, room: string): TransactionTrace | null {
 			try {
 				return observer.txStart(state, room);

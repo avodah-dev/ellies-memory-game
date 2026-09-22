@@ -2,7 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EffectManager } from "../services/effects/EffectManager";
 import type { ISyncAdapter } from "../services/sync/ISyncAdapter";
-import type { OnlineGameState } from "../types";
+import type { GameState, OnlineGameState } from "../types";
 import {
 	createCardSet,
 	createTestGameState,
@@ -227,7 +227,7 @@ describe("match-only early resolution", () => {
 		expect(setState).toHaveBeenCalledTimes(4);
 	});
 
-	it("pauses and drops the dependent third flip when early match resolution is denied", async () => {
+	it("coalesces match and dependent flip rejections without replaying the third press", async () => {
 		const initialGameState = createTestOnlineGameState({
 			cards: createCardSet(3),
 			syncVersion: 0,
@@ -238,15 +238,20 @@ describe("match-only early resolution", () => {
 			syncVersion: 2,
 			cards: initialGameState.cards.map((c, i) => ({ ...c, isFlipped: i < 2 })),
 		};
+		let restore!: (state: GameState) => void;
+		const reading = new Promise<GameState>((resolve) => {
+			restore = resolve;
+		});
 		const setState = vi
 			.fn()
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(undefined)
-			.mockRejectedValueOnce(new Error("Match denied"));
+			.mockRejectedValueOnce(new Error("Match denied"))
+			.mockRejectedValueOnce(new Error("Dependent flip denied"));
 		const syncAdapter = {
 			subscribeToState: () => () => {},
 			setState,
-			getState: vi.fn().mockResolvedValue(confirmed),
+			getState: vi.fn().mockReturnValue(reading),
 		} as unknown as ISyncAdapter;
 		const { result, unmount } = renderHook(() =>
 			useGameController(
@@ -265,14 +270,17 @@ describe("match-only early resolution", () => {
 			result.current.flipCard("card-2");
 		});
 		expect(result.current.syncError).toBe("Match denied");
-		expect(setState.mock.calls.map(([s]) => s.syncVersion)).toEqual([1, 2, 3]);
+		expect(setState.mock.calls.map(([s]) => s.syncVersion)).toEqual([
+			1, 2, 3, 4,
+		]);
 		act(() => {
 			result.current.flipCard("card-3");
 			vi.advanceTimersByTime(1000);
 		});
-		expect(setState).toHaveBeenCalledTimes(3);
+		expect(setState).toHaveBeenCalledTimes(4);
 		expect(result.current.gameState.cards[3].isFlipped).toBe(false);
-		await act(async () => result.current.resynchronize());
+		expect(syncAdapter.getState).toHaveBeenCalledTimes(1);
+		await act(async () => restore(confirmed));
 		expect(result.current.gameState).toEqual(confirmed);
 		expect(result.current.syncError).toBeNull();
 		unmount();

@@ -833,6 +833,10 @@ test("named players start a 16-pair Thanksgiving game with strict rules", async 
 				page.locator('main img[src*="/deck-images/thanksgiving/"]'),
 			).toHaveCount(32);
 		}
+		const moveReads: string[] = [];
+		host.on("request", request => {
+			if (/batchGet|beginTransaction/i.test(request.url())) moveReads.push(request.url());
+		});
 		await card(host, 0).click();
 		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
 		await card(host, 1).click();
@@ -845,12 +849,13 @@ test("named players start a 16-pair Thanksgiving game with strict rules", async 
 		await expect.poll(async () => {
 			const rows = await diagnostics(host);
 			const resolution = rows.find(r => r.message === "mm.game.match" && r.context.trigger === "next-card");
-			const writes = rows.filter(r => r.message === "mm.sync.write.result" && r.context.ok === true);
+			const writes = rows.filter(r => r.message === "mm.sync.write.result" && r.context.ok === true && r.context.write_mode === "batch");
 			const matchWrite = writes.find(r => r.context.context === "match:complete");
 			const flipWrite = writes.find(r => r.context.context === "flip:card-2");
 			return Boolean(resolution && matchWrite && flipWrite &&
 				Number(flipWrite.context.sync_version) === Number(matchWrite.context.sync_version) + 1);
 		}).toBe(true);
+		expect(moveReads, "ordinary flips and match resolution must not read before writing").toEqual([]);
 	} finally {
 		await guestContext.close();
 	}

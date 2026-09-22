@@ -9,7 +9,6 @@ import {
 	writeSkipped,
 	writeEnqueued,
 	writeDequeued,
-	writeDropped,
 	snapshotGate,
 	errorCode,
 } from "../services/telemetry/gameplay";
@@ -26,13 +25,14 @@ import {
 } from "react";
 import type { GameState, OnlineGameState } from "../types";
 import type { ISyncAdapter } from "../services/sync/ISyncAdapter";
-import { isNewerState } from "../services/sync/stateProtocol";
+import { isNewerState, sameOnlineState } from "../services/sync/stateProtocol";
 
 interface Options {
 	isOnlineMode: boolean;
 	syncAdapter?: ISyncAdapter;
 	roomCode?: string;
 	localPlayerSlot?: number;
+	localUserId?: string | null;
 	onlineReady: boolean;
 	gameState: GameState;
 	initialGameState: GameState;
@@ -40,12 +40,23 @@ interface Options {
 	matchCheckTimeoutRef: RefObject<ReturnType<typeof setTimeout> | null>;
 	isCheckingMatchRef: RefObject<boolean>;
 }
+function createWriteSession() {
+	return {
+		active: true,
+		pending: new Set<Promise<void>>(),
+		proposed: new Map<number, OnlineGameState>(),
+		confirmed: null as OnlineGameState | null,
+		recoveryRequired: false,
+		recovery: null as Promise<void> | null,
+	};
+}
 
 export function useGameSynchronization({
 	isOnlineMode,
 	syncAdapter,
 	roomCode,
 	localPlayerSlot,
+	localUserId,
 	onlineReady,
 	gameState,
 	initialGameState,
@@ -56,9 +67,17 @@ export function useGameSynchronization({
 	const [trace] = useState(createSyncTrace);
 	const [syncError, setSyncError] = useState<string | null>(null);
 	const pausedRef = useRef(false);
-	const writeQueue = useRef(Promise.resolve());
 	const generation = useRef(0);
-	const previousRoom = useRef(roomCode);
+	const sessionRef = useRef(createWriteSession());
+	const readyRef = useRef(onlineReady);
+	readyRef.current = onlineReady;
+	const previousIdentity = useRef({
+		roomCode,
+		syncAdapter,
+		localPlayerSlot,
+		localUserId,
+		isOnlineMode,
+	});
 	const initialRevision = initialGameState as Partial<OnlineGameState>;
 	const lastSyncedVersionRef = useRef(initialRevision.syncVersion ?? 0);
 	const localVersionRef = useRef(initialRevision.syncVersion ?? 0);
@@ -71,6 +90,8 @@ export function useGameSynchronization({
 		isCheckingMatchRef.current = false;
 	}, [matchCheckTimeoutRef, isCheckingMatchRef]);
 	const invalidateSession = useCallback(() => {
+		sessionRef.current.active = false;
+		sessionRef.current = createWriteSession();
 		++generation.current;
 		epochBump(trace, generation.current, "invalidate");
 		cancelResolution();
@@ -86,48 +107,102 @@ export function useGameSynchronization({
 		},
 		[cancelResolution, trace],
 	);
+	const confirm = useCallback((state: OnlineGameState) => {
+		const session = sessionRef.current;
+		if (!session.confirmed || isNewerState(state, session.confirmed))
+			session.confirmed = state;
+		lastSyncedVersionRef.current = Math.max(
+			lastSyncedVersionRef.current,
+			state.syncVersion,
+		);
+		for (const version of session.proposed.keys()) {
+			if (version <= state.syncVersion) session.proposed.delete(version);
+		}
+	}, []);
 	const accept = useCallback(
 		(state: OnlineGameState) => {
 			cancelResolution();
+			lastGameRoundRef.current = state.gameRound;
 			lastSyncedVersionRef.current = state.syncVersion;
 			localVersionRef.current = state.syncVersion;
-			lastGameRoundRef.current = state.gameRound;
+			confirm(state);
 			stateApplied(state, "remote");
 			setGameState(state);
 		},
-		[cancelResolution, setGameState],
+		[cancelResolution, confirm, setGameState],
 	);
-	const resynchronize = useCallback(async () => {
-		if (!syncAdapter || !roomCode) return;
+	// Called when start/replay installs its transaction's committed state, or the
+	// controller explicitly returns to setup. Old round promises stay observed.
+	const replaceRevision = useCallback(
+		(state: GameState) => {
+			invalidateSession();
+			const revision = state as Partial<OnlineGameState>;
+			lastGameRoundRef.current = revision.gameRound ?? 0;
+			lastSyncedVersionRef.current = revision.syncVersion ?? 0;
+			localVersionRef.current = lastSyncedVersionRef.current;
+			pausedRef.current = false;
+			setSyncError(null);
+		},
+		[invalidateSession],
+	);
+	const resynchronize = useCallback((): Promise<void> => {
+		if (!isOnlineMode || !syncAdapter || !roomCode) return Promise.resolve();
+		const session = sessionRef.current;
+		if (session.recovery) return session.recovery;
+		session.recoveryRequired = true;
 		pausedRef.current = true;
 		pauseTrace(trace, "resync");
-		track("mm.sync.resync", { phase: "start" });
-		const epoch = ++generation.current;
-		epochBump(trace, epoch, "resync");
+		track("mm.sync.resync", { phase: "start", inflight: session.pending.size });
+		++generation.current;
+		epochBump(trace, generation.current, "resync");
 		cancelResolution();
-		try {
-			const state = (await syncAdapter.getState()) as OnlineGameState | null;
-			if (epoch !== generation.current) {
-				track("mm.sync.resync", { phase: "stale" });
-				return;
+		const recovery = (async () => {
+			try {
+				// These promises absorb each rejection after observing it. Do not read
+				// early: even a later proposal may still commit after another writer.
+				await Promise.all([...session.pending]);
+				if (!session.active) return;
+				track("mm.sync.resync", {
+					phase: "read",
+					inflight: session.pending.size,
+				});
+				const response =
+					(await syncAdapter.getState()) as OnlineGameState | null;
+				if (!session.active) {
+					track("mm.sync.resync", { phase: "stale" });
+					return;
+				}
+				if (!response) throw new Error("Game is unavailable");
+				// A listener may see a later server revision while the read is in flight.
+				const state =
+					session.confirmed && isNewerState(session.confirmed, response)
+						? session.confirmed
+						: response;
+				accept(state);
+				session.proposed.clear();
+				session.recoveryRequired = false;
+				if (readyRef.current) {
+					setSyncError(null);
+					pausedRef.current = false;
+					resumeTrace(trace, "resync");
+				}
+				track("mm.sync.resync", { phase: "resolved" });
+			} catch (error) {
+				track("mm.sync.resync", {
+					phase: "rejected",
+					error_code: errorCode(error),
+				});
+				if (session.active)
+					setSyncError(
+						error instanceof Error ? error.message : "Synchronization failed",
+					);
+			} finally {
+				session.recovery = null;
 			}
-			if (!state) throw new Error("Game is unavailable");
-			accept(state);
-			setSyncError(null);
-			pausedRef.current = false;
-			resumeTrace(trace, "resync");
-			track("mm.sync.resync", { phase: "resolved" });
-		} catch (error) {
-			track("mm.sync.resync", {
-				phase: "rejected",
-				error_code: errorCode(error),
-			});
-			if (epoch === generation.current)
-				setSyncError(
-					error instanceof Error ? error.message : "Synchronization failed",
-				);
-		}
-	}, [syncAdapter, roomCode, accept, cancelResolution, trace]);
+		})();
+		session.recovery = recovery;
+		return recovery;
+	}, [isOnlineMode, syncAdapter, roomCode, accept, cancelResolution, trace]);
 	const syncToFirestore = useCallback(
 		(state: GameState, context?: string) => {
 			writeSkipped(
@@ -138,47 +213,113 @@ export function useGameSynchronization({
 				state,
 			);
 			if (!isOnlineMode || !syncAdapter || pausedRef.current) return;
-			const epoch = generation.current;
+			const session = sessionRef.current;
 			const onlineState: OnlineGameState = {
 				...state,
 				syncVersion: ++localVersionRef.current,
 				lastUpdatedBy: localPlayerSlot,
 				gameRound: lastGameRoundRef.current,
 			};
-			const write = writeEnqueued(trace, onlineState, context, epoch);
-			writeQueue.current = writeQueue.current.then(async () => {
-				if (epoch !== generation.current || pausedRef.current) {
-					writeDropped(trace, write, generation.current, pausedRef.current);
-					return;
-				}
-				writeDequeued(trace, write);
-				try {
-					await syncAdapter.setState(onlineState);
-				} catch (error) {
-					if (epoch === generation.current)
+			session.proposed.set(onlineState.syncVersion, onlineState);
+			const write = writeEnqueued(
+				trace,
+				onlineState,
+				context,
+				generation.current,
+			);
+			// Preserve timing joins; dequeue happens in this same input task. There is
+			// no application queue and no acknowledgement barrier between submissions.
+			writeDequeued(trace, write);
+			let operation: Promise<void>;
+			try {
+				operation = syncAdapter.setState(onlineState);
+			} catch (error) {
+				operation = Promise.reject(error);
+			}
+			const settled = Promise.resolve(operation).then(
+				() => {
+					session.pending.delete(settled);
+					track("mm.sync.write.inflight", {
+						...write.fields,
+						write_id: write.id,
+						phase: "committed",
+						inflight: session.pending.size,
+					});
+					if (
+						session.active &&
+						onlineState.gameRound === lastGameRoundRef.current
+					)
+						confirm(onlineState);
+				},
+				(error: unknown) => {
+					session.pending.delete(settled);
+					track("mm.sync.write.inflight", {
+						...write.fields,
+						write_id: write.id,
+						phase: "rejected",
+						inflight: session.pending.size,
+						error_code: errorCode(error),
+					});
+					if (session.active && !session.recoveryRequired) {
 						pause(
 							error instanceof Error ? error.message : "Synchronization failed",
 						);
-				}
+						void resynchronize();
+					}
+				},
+			);
+			session.pending.add(settled);
+			track("mm.sync.write.inflight", {
+				...write.fields,
+				write_id: write.id,
+				phase: "submitted",
+				inflight: session.pending.size,
 			});
 		},
-		[isOnlineMode, syncAdapter, localPlayerSlot, pause, trace],
+		[
+			isOnlineMode,
+			syncAdapter,
+			localPlayerSlot,
+			pause,
+			resynchronize,
+			confirm,
+			trace,
+		],
 	);
 
-	// A different room is a different synchronization session. Old promises cannot
-	// update the new session, and its first snapshot must not inherit old revisions.
 	useEffect(() => {
-		if (previousRoom.current !== roomCode) {
+		const previous = previousIdentity.current;
+		if (
+			previous.roomCode !== roomCode ||
+			previous.syncAdapter !== syncAdapter ||
+			previous.localPlayerSlot !== localPlayerSlot ||
+			previous.localUserId !== localUserId ||
+			previous.isOnlineMode !== isOnlineMode
+		) {
 			lastSyncedVersionRef.current = 0;
 			localVersionRef.current = 0;
 			lastGameRoundRef.current = 0;
-			previousRoom.current = roomCode;
 		}
+		previousIdentity.current = {
+			roomCode,
+			syncAdapter,
+			localPlayerSlot,
+			localUserId,
+			isOnlineMode,
+		};
 		pausedRef.current = false;
 		resumeTrace(trace, "room-effect");
 		setSyncError(null);
 		return invalidateSession;
-	}, [roomCode, invalidateSession, trace]);
+	}, [
+		roomCode,
+		syncAdapter,
+		localPlayerSlot,
+		localUserId,
+		isOnlineMode,
+		invalidateSession,
+		trace,
+	]);
 	useEffect(() => {
 		if (!isOnlineMode || !roomCode || gameState.gameStatus === "setup") return;
 		if (!onlineReady) pause("Connection interrupted. Game paused.");
@@ -199,10 +340,13 @@ export function useGameSynchronization({
 			(localPlayerSlot !== 1 && localPlayerSlot !== 2)
 		)
 			return;
+		let listening = true;
 		const listener = listenerStart("hook", roomCode);
 		const stop = syncAdapter.subscribeToState(
 			(remoteState) => {
+				if (!listening) return;
 				const remote = remoteState as OnlineGameState;
+				const session = sessionRef.current;
 				if (remote.gameRound < lastGameRoundRef.current) {
 					snapshotGate(
 						remote,
@@ -213,26 +357,19 @@ export function useGameSynchronization({
 					return;
 				}
 				const newRound = remote.gameRound > lastGameRoundRef.current;
-				// Confirm our own queued writes without rolling back later optimistic moves.
-				// A revision beyond our queue can come from another tab using the same UID.
-				if (
-					!newRound &&
-					remote.lastUpdatedBy === localPlayerSlot &&
-					remote.syncVersion <= localVersionRef.current
-				) {
+				if (!newRound && session.recoveryRequired) {
 					snapshotGate(
 						remote,
-						"self-echo",
+						"recovering",
 						lastGameRoundRef.current,
 						lastSyncedVersionRef.current,
 					);
-					lastSyncedVersionRef.current = Math.max(
-						lastSyncedVersionRef.current,
-						remote.syncVersion,
-					);
+					if (!session.confirmed || isNewerState(remote, session.confirmed))
+						session.confirmed = remote;
 					return;
 				}
 				if (
+					!newRound &&
 					!isNewerState(remote, {
 						gameRound: lastGameRoundRef.current,
 						syncVersion: lastSyncedVersionRef.current,
@@ -246,16 +383,39 @@ export function useGameSynchronization({
 					);
 					return;
 				}
+				const expected = session.proposed.get(remote.syncVersion);
+				if (!newRound && expected) {
+					if (sameOnlineState(remote, expected)) {
+						snapshotGate(
+							remote,
+							"self-echo",
+							lastGameRoundRef.current,
+							lastSyncedVersionRef.current,
+						);
+						confirm(remote);
+					} else {
+						snapshotGate(
+							remote,
+							"conflict",
+							lastGameRoundRef.current,
+							lastSyncedVersionRef.current,
+						);
+						session.confirmed = remote;
+						pause("Game changed. Synchronizing confirmed state.");
+						void resynchronize();
+					}
+					return;
+				}
 				snapshotGate(
 					remote,
 					"accepted",
 					lastGameRoundRef.current,
 					lastSyncedVersionRef.current,
 				);
+				if (newRound) invalidateSession();
 				++generation.current;
 				epochBump(trace, generation.current, "snapshot");
 				accept(remote);
-				// A confirmed snapshot can win the race with the explicit server read.
 				if (onlineReady) {
 					pausedRef.current = false;
 					resumeTrace(trace, "snapshot");
@@ -263,6 +423,7 @@ export function useGameSynchronization({
 				}
 			},
 			(error) => {
+				if (!listening) return;
 				track("mm.sync.resync", {
 					phase: "listener-error",
 					error_code: errorCode(error),
@@ -270,15 +431,27 @@ export function useGameSynchronization({
 				pause(error.message);
 			},
 		);
-		return observedListener(stop, listener, "hook", roomCode);
+		return observedListener(
+			() => {
+				listening = false;
+				stop();
+			},
+			listener,
+			"hook",
+			roomCode,
+		);
 	}, [
 		isOnlineMode,
 		syncAdapter,
 		roomCode,
 		localPlayerSlot,
+		localUserId,
 		onlineReady,
 		accept,
+		confirm,
 		pause,
+		resynchronize,
+		invalidateSession,
 		trace,
 	]);
 	return {
@@ -286,6 +459,7 @@ export function useGameSynchronization({
 		syncError,
 		resynchronize,
 		syncToFirestore,
+		replaceRevision,
 		pausedRef,
 		generation,
 		lastSyncedVersionRef,
