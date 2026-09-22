@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
 	assertNextRevision,
+	sameOnlineState,
 	isGameState,
 	isNewerState,
 	parseOnlineState,
@@ -199,4 +200,33 @@ describe("state protocol", () => {
 				parseRoom({ ...room, config: { ...room.config, ...config } }),
 			).toThrow();
 	});
+});
+
+it("confirms only identical canonical proposals, including every deck and outcome field", () => {
+	const original = state();
+	expect(sameOnlineState(original, structuredClone(original))).toBe(true);
+	for (const change of [
+		{ gameRound: 3 },
+		{ syncVersion: 4 },
+		{ currentPlayer: 2 },
+		{ gameStatus: "finished" as const },
+		{ lastUpdatedBy: 2 },
+		{ cards: [] },
+	])
+		expect(sameOnlineState(original, { ...original, ...change })).toBe(false);
+	for (const change of [
+		{ id: "other" },
+		{ imageId: "other" },
+		{ imageUrl: "other" },
+		{ gradient: "other" },
+		{ isFlipped: true },
+		{ isMatched: true },
+		{ matchedByPlayerId: 2 },
+	])
+		expect(
+			sameOnlineState(original, {
+				...original,
+				cards: [{ ...original.cards[0], ...change }],
+			}),
+		).toBe(false);
 });

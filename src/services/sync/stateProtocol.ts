@@ -87,6 +87,33 @@ export function assertNextRevision(
 			"Game changed. Resynchronize before moving.",
 		);
 }
+// Revision + player slot alone cannot identify a proposal from another tab
+// sharing the same UID. Compare the canonical game payload before confirming it.
+export function sameOnlineState(
+	a: OnlineGameState,
+	b: OnlineGameState,
+): boolean {
+	return (
+		a.gameRound === b.gameRound &&
+		a.syncVersion === b.syncVersion &&
+		a.currentPlayer === b.currentPlayer &&
+		a.gameStatus === b.gameStatus &&
+		a.lastUpdatedBy === b.lastUpdatedBy &&
+		a.cards.length === b.cards.length &&
+		a.cards.every((card, index) => {
+			const other = b.cards[index];
+			return (
+				card.id === other.id &&
+				card.imageId === other.imageId &&
+				card.imageUrl === other.imageUrl &&
+				card.gradient === other.gradient &&
+				card.isFlipped === other.isFlipped &&
+				card.isMatched === other.isMatched &&
+				card.matchedByPlayerId === other.matchedByPlayerId
+			);
+		})
+	);
+}
 export function serializeGame(state: OnlineGameState) {
 	const matches: Record<string, number> = {};
 	const selectedIndexes: number[] = [];
