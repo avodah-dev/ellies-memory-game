@@ -28,7 +28,7 @@ export const FixedGameControls = ({
 	return (
 		<>
 			{/* Left side - Reset Button */}
-			<div className="fixed top-5 left-5 z-10 flex flex-col gap-2">
+			<div className="fixed top-5 left-5 z-30 flex flex-col gap-2">
 				<button
 					type="button"
 					onClick={onResetClick}
@@ -90,7 +90,7 @@ export const FixedGameControls = ({
 				<button
 					type="button"
 					onClick={onToggleFullscreen}
-					className="fixed top-5 right-5 z-10 bg-gray-600 hover:bg-gray-700 text-white p-2 rounded-lg transition-colors duration-200"
+					className="fixed top-5 right-5 z-30 bg-gray-600 hover:bg-gray-700 text-white p-2 rounded-lg transition-colors duration-200"
 					title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
 				>
 					{isFullscreen ? (
@@ -131,7 +131,7 @@ export const FixedGameControls = ({
 				<button
 					type="button"
 					onClick={onOpenSettings}
-					className="fixed top-5 right-5 z-10 p-3 text-base font-semibold bg-gray-500 hover:bg-gray-600 text-white rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
+					className="fixed top-5 right-5 z-30 p-3 text-base font-semibold bg-gray-500 hover:bg-gray-600 text-white rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
 					title="Settings"
 				>
 					<svg

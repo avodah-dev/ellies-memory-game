@@ -574,15 +574,20 @@ test("a matched flight keeps its decoded face and cannot intercept the next pres
 	await page.getByRole("button", { name: /Same Device Play/ }).click();
 	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
 	await page.getByRole("button", { name: "20 8×5 Hard" }).click();
+	await page.clock.install();
+	await page.clock.pauseAt(new Date());
 	await page
 		.getByRole("button", { name: "🎮 Start Game", exact: true })
 		.click();
 	const board = page.getByRole("application", { name: "Game board" });
 	await expect(board).toBeVisible();
-	await board.evaluate(async (e) => {
-		await Promise.allSettled(
-			e.getAnimations({ subtree: true }).map((a) => a.finished),
-		);
+	// Keep React's deal timer pending while freezing real CSS deal animations
+	// at a visible, still-rotated pose. This exercises early matches deterministically.
+	await board.evaluate((e) => {
+		for (const a of e.getAnimations({ subtree: true })) {
+			a.pause();
+			a.currentTime = Number(a.effect!.getTiming().delay) + 750;
+		}
 	});
 	const bottom = await board.locator("button[data-card-id]").evaluateAll(
 		(nodes) =>
@@ -601,21 +606,65 @@ test("a matched flight keeps its decoded face and cannot intercept the next pres
 	// The same decoded image and face must survive the match-to-flight transition.
 	const original = await card(page, bottom).locator("img").elementHandle();
 	expect(original).not.toBeNull();
-	await original!.evaluate(async image => { await (image as HTMLImageElement).decode(); });
-	const faceStyle = await original!.evaluate(image => {
-		const content = image.parentElement!, face = content.parentElement!;
-		return { background: getComputedStyle(face).backgroundImage, color: getComputedStyle(face).backgroundColor, font: getComputedStyle(content).fontSize };
+	await original!.evaluate(async (image) => {
+		await (image as HTMLImageElement).decode();
+	});
+	const faceStyle = await original!.evaluate((image) => {
+		const content = image.parentElement!,
+			face = content.parentElement!;
+		return {
+			background: getComputedStyle(face).backgroundImage,
+			color: getComputedStyle(face).backgroundColor,
+			font: getComputedStyle(content).fontSize,
+		};
 	});
 	await card(page, bottom).click();
 	await card(page, bottom ^ 1).click();
+	// A third press resolves this known match immediately, before the deal ends.
+	await card(page, 0).click();
 	await expect(page.locator(".card-fly-to-player").first()).toBeVisible();
-	const flightImage = page.locator(`.card-fly-to-player [data-card-id="card-${bottom}"] img`);
-	expect(await flightImage.evaluate((image, old) => image === old, original)).toBe(true);
-	expect(await original!.evaluate(image => {
-		const content = image.parentElement!, face = content.parentElement!;
-		return { background: getComputedStyle(face).backgroundImage, color: getComputedStyle(face).backgroundColor, font: getComputedStyle(content).fontSize };
-	})).toEqual(faceStyle);
-	expect(await original!.evaluate(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
+	expect(
+		await page
+			.locator(".card-fly-to-player")
+			.first()
+			.evaluate((e) => ({
+				parentTransform: getComputedStyle(e.parentElement!).transform,
+				parentAnimation: getComputedStyle(e.parentElement!).animationName,
+				initialTransform: (e as HTMLElement).style.getPropertyValue(
+					"--flight-start-transform",
+				),
+			})),
+	).toEqual({
+		parentTransform: "none",
+		parentAnimation: "none",
+		initialTransform: expect.stringMatching(/^matrix/),
+	});
+	// Let telemetry timers proceed; flights stay paused by the explicit CSS rule.
+	await page.clock.resume();
+	const flightImage = page.locator(
+		`.card-fly-to-player [data-card-id="card-${bottom}"] img`,
+	);
+	expect(
+		await flightImage.evaluate((image, old) => image === old, original),
+	).toBe(true);
+	expect(
+		await original!.evaluate((image) => {
+			const content = image.parentElement!,
+				face = content.parentElement!;
+			return {
+				background: getComputedStyle(face).backgroundImage,
+				color: getComputedStyle(face).backgroundColor,
+				font: getComputedStyle(content).fontSize,
+			};
+		}),
+	).toEqual(faceStyle);
+	expect(
+		await original!.evaluate(
+			(image) =>
+				(image as HTMLImageElement).complete &&
+				(image as HTMLImageElement).naturalWidth > 0,
+		),
+	).toBe(true);
 	// Scrub the actual flight keyframes until they cover a playable card center;
 	// preserve its real geometry and deliver native input through that decoration.
 	const point = await page.evaluate(async () => {
@@ -629,7 +678,7 @@ test("a matched flight keeps its decoded face and cannot intercept the next pres
 			}
 			await new Promise(requestAnimationFrame);
 			for (const card of document.querySelectorAll(
-				'main [role="application"] button[data-card-id]:enabled',
+				'main [role="application"] button[data-card-id]:enabled[aria-pressed="false"]',
 			)) {
 				const c = card.getBoundingClientRect(),
 					x = c.x + c.width / 2,
@@ -672,6 +721,22 @@ test("a matched flight keeps its decoded face and cannot intercept the next pres
 			),
 		)
 		.toBe(true);
+	// An oversized landscape board must not cover Settings during a flight.
+	await page.setViewportSize({ width: 700, height: 400 });
+	const settings = page.getByTitle("Settings", { exact: true }).last();
+	await expect(settings).toBeVisible();
+	await board.evaluate(
+		(e, rect) => {
+			e.style.position = "fixed";
+			e.style.left = rect.x + "px";
+			e.style.top = rect.y + "px";
+		},
+		(await settings.boundingBox())!,
+	);
+	await settings.click();
+	await expect(
+		page.getByRole("button", { name: "Reload App", exact: true }),
+	).toBeVisible();
 });
 
 test("staggered contacts reach both cards during the first flip", async ({
