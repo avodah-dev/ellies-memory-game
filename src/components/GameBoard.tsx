@@ -42,6 +42,8 @@ interface CardAnimationData {
 
 // Type for stored fly animation data
 interface FlyData {
+	initialTransform: string;
+	initialOpacity: string;
 	startX: number;
 	startY: number;
 	endX: number;
@@ -49,14 +51,6 @@ interface FlyData {
 	finalY: number;
 	rotationAngle: number;
 	playerId: number | undefined;
-}
-
-// Type for cached card position (captured when card is flipped)
-interface CachedCardPosition {
-	left: number;
-	top: number;
-	width: number;
-	height: number;
 }
 
 // Type for local flying card state
@@ -95,9 +89,6 @@ export const GameBoard = ({
 			cards.filter((c) => c.isMatched).map((c) => c.id),
 		);
 
-	// Cache card positions when they get flipped - used to calculate fly data
-	const cardPositionCache = useRef<Map<string, CachedCardPosition>>(new Map());
-
 	// Calculate columns from card count if not provided
 	const columns = useMemo(() => {
 		if (columnsProp) return columnsProp;
@@ -128,7 +119,6 @@ export const GameBoard = ({
 
 	// Animation cleanup never controls game rules or persistence.
 	const handleFlyingCardAnimationEnd = useCallback((cardId: string) => {
-		cardPositionCache.current.delete(cardId);
 		setFlyingCards((previous) => {
 			const next = new Map(previous);
 			next.delete(cardId);
@@ -217,33 +207,6 @@ export const GameBoard = ({
 		});
 	}, [isAnimating, cardSize, cards, columns]);
 
-	// Cache card positions when they get flipped (before they might become matched)
-	// This ensures we have position data available when calculating fly animations
-	useLayoutEffect(() => {
-		// Find cards that are flipped but not matched (selected cards)
-		const selectedCards = cards.filter((c) => c.isFlipped && !c.isMatched);
-
-		for (const card of selectedCards) {
-			// Only cache if we don't already have a position for this card
-			if (!cardPositionCache.current.has(card.id)) {
-				const cardElement = cardRefs.current.get(card.id);
-				if (cardElement) {
-					const rect = cardElement.getBoundingClientRect();
-					cardPositionCache.current.set(card.id, {
-						left: rect.left,
-						top: rect.top,
-						width: rect.width,
-						height: rect.height,
-					});
-					debugLog("[POSITION CACHE] Cached position for flipped card", {
-						cardId: card.id,
-						rect: { left: rect.left, top: rect.top },
-					});
-				}
-			}
-		}
-	}, [cards]);
-
 	// Start the flight before paint, keeping the existing face/image mounted.
 	useLayoutEffect(() => {
 		const currentMatched = new Set(
@@ -269,29 +232,11 @@ export const GameBoard = ({
 			const newFlyingCards = new Map(flyingCards);
 
 			for (const card of newlyMatched) {
-				// Try to get position from cache (captured when card was flipped)
-				let rect = cardPositionCache.current.get(card.id);
-
-				// Fallback: try to get from DOM ref (might still exist on first render)
-				if (!rect) {
-					const cardElement = cardRefs.current.get(card.id);
-					if (cardElement) {
-						const domRect = cardElement.getBoundingClientRect();
-						rect = {
-							left: domRect.left,
-							top: domRect.top,
-							width: domRect.width,
-							height: domRect.height,
-						};
-					}
-				}
-
-				if (!rect) {
-					console.warn("[FLY DATA] No position data for matched card", {
-						cardId: card.id,
-					});
-					continue;
-				}
+				const cell = cardRefs.current.get(card.id)!;
+				// The cell never transforms. Transfer the current deal pose into the
+				// flight on the SAME face, so the two animations cannot compose.
+				const rect = cell.getBoundingClientRect();
+				const faceStyle = getComputedStyle(cell.lastElementChild!);
 
 				// Calculate card's actual center position
 				const cardCenterX = rect.left + rect.width / 2;
@@ -316,6 +261,8 @@ export const GameBoard = ({
 				const finalY = -cardSize - 50; // Off screen above
 
 				const flyData: FlyData = {
+					initialTransform: faceStyle.transform || "none",
+					initialOpacity: faceStyle.opacity || "1",
 					startX: rect.left,
 					startY: rect.top,
 					endX: targetX - cardSize / 2,
@@ -327,7 +274,7 @@ export const GameBoard = ({
 
 				debugLog("[FLY DATA] Calculated fly data for card", {
 					cardId: card.id,
-					source: cardPositionCache.current.has(card.id) ? "cache" : "dom",
+					source: "dom",
 					positions: {
 						start: { x: flyData.startX, y: flyData.startY },
 						end: { x: flyData.endX, y: flyData.endY },
@@ -346,17 +293,6 @@ export const GameBoard = ({
 		// Update previous matched state
 		prevMatchedRef.current = currentMatched;
 	}, [cards, cardSize, flyingCards]);
-
-	// Clean up position cache for cards that are no longer relevant
-	useEffect(() => {
-		for (const [cardId] of cardPositionCache.current) {
-			const card = cards.find((c) => c.id === cardId);
-			const isFlying = flyingCards.has(cardId);
-			if (card && !card.isFlipped && !isFlying) {
-				cardPositionCache.current.delete(cardId);
-			}
-		}
-	}, [cards, flyingCards]);
 
 	return (
 		<>
@@ -400,26 +336,8 @@ export const GameBoard = ({
 								if (el) cardRefs.current.set(card.id, el);
 								else cardRefs.current.delete(card.id);
 							}}
-							className={isAnimating ? "relative card-fly-in" : "relative"}
-							style={
-								{
-									width: cardSize,
-									height: cardSize,
-									animationDelay: isAnimating ? `${index * 30}ms` : "0ms",
-									"--start-x":
-										isAnimating && animationData[index]
-											? `${animationData[index].startX}px`
-											: "0px",
-									"--start-y":
-										isAnimating && animationData[index]
-											? `${animationData[index].startY}px`
-											: "0px",
-									"--rotation":
-										isAnimating && animationData[index]
-											? `${animationData[index].rotation}deg`
-											: "0deg",
-								} as React.CSSProperties
-							}
+							className="relative"
+							style={{ width: cardSize, height: cardSize }}
 						>
 							<div
 								aria-hidden="true"
@@ -431,7 +349,9 @@ export const GameBoard = ({
 									className={
 										flight
 											? "absolute inset-0 z-50 card-fly-to-player pointer-events-none"
-											: "absolute inset-0"
+											: isAnimating
+												? "absolute inset-0 card-fly-in"
+												: "absolute inset-0"
 									}
 									onAnimationEnd={
 										flight
@@ -444,12 +364,21 @@ export const GameBoard = ({
 									style={
 										flight
 											? ({
+													"--flight-start-transform": flight.initialTransform,
+													"--flight-start-opacity": flight.initialOpacity,
 													"--end-x": `${flight.endX - flight.startX}px`,
 													"--end-y": `${flight.endY - flight.startY}px`,
 													"--final-y": `${flight.finalY - flight.startY}px`,
 													"--rotation-angle": `${flight.rotationAngle}deg`,
 												} as React.CSSProperties)
-											: undefined
+											: ({
+													animationDelay: isAnimating
+														? `${index * 30}ms`
+														: "0ms",
+													"--start-x": `${animationData[index]?.startX ?? 0}px`,
+													"--start-y": `${animationData[index]?.startY ?? 0}px`,
+													"--rotation": `${animationData[index]?.rotation ?? 0}deg`,
+												} as React.CSSProperties)
 									}
 								>
 									<Card
