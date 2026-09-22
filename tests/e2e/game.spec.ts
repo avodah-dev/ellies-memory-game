@@ -565,7 +565,7 @@ test("primary mouse press flips before release, drag-off stays flipped, keyboard
 	).toBe(true);
 });
 
-test("a flying matched card cannot intercept a press on the next playable card", async ({
+test("a matched flight keeps its decoded face and cannot intercept the next press", async ({
 	page,
 	context,
 }) => {
@@ -598,9 +598,24 @@ test("a flying matched card cannot intercept a press on the next playable card",
 	await page.addStyleTag({
 		content: ".card-fly-to-player { animation-play-state: paused !important; }",
 	});
+	// The same decoded image and face must survive the match-to-flight transition.
+	const original = await card(page, bottom).locator("img").elementHandle();
+	expect(original).not.toBeNull();
+	await original!.evaluate(async image => { await (image as HTMLImageElement).decode(); });
+	const faceStyle = await original!.evaluate(image => {
+		const content = image.parentElement!, face = content.parentElement!;
+		return { background: getComputedStyle(face).backgroundImage, color: getComputedStyle(face).backgroundColor, font: getComputedStyle(content).fontSize };
+	});
 	await card(page, bottom).click();
 	await card(page, bottom ^ 1).click();
 	await expect(page.locator(".card-fly-to-player").first()).toBeVisible();
+	const flightImage = page.locator(`.card-fly-to-player [data-card-id="card-${bottom}"] img`);
+	expect(await flightImage.evaluate((image, old) => image === old, original)).toBe(true);
+	expect(await original!.evaluate(image => {
+		const content = image.parentElement!, face = content.parentElement!;
+		return { background: getComputedStyle(face).backgroundImage, color: getComputedStyle(face).backgroundColor, font: getComputedStyle(content).fontSize };
+	})).toEqual(faceStyle);
+	expect(await original!.evaluate(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
 	// Scrub the actual flight keyframes until they cover a playable card center;
 	// preserve its real geometry and deliver native input through that decoration.
 	const point = await page.evaluate(async () => {

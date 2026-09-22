@@ -44,3 +44,51 @@ it("flies only new matches, including transitions with no selected-card render",
 		"true",
 	);
 });
+
+it.each([false, true])(
+	"keeps the painted image and face styling through flight (white=%s)",
+	(white) => {
+		const cards = createCardSet(2).map((card) => ({
+			...card,
+			isFlipped: true,
+			gradient: "from-red-500 to-blue-500",
+		}));
+		const renderBoard = (matched: boolean) => (
+			<GameBoard
+				cards={cards.map((card, i) => ({
+					...card,
+					isMatched: matched && i < 2,
+				}))}
+				onCardClick={vi.fn()}
+				useWhiteCardBackground={white}
+			/>
+		);
+		const { container, rerender } = render(renderBoard(false));
+		const button = container.querySelector('[data-card-id="card-0"]')!;
+		const image = button.querySelector("img")!;
+		const content = image.parentElement!;
+		const face = content.parentElement!;
+		const styling = {
+			background: face.className,
+			fontSize: content.style.fontSize,
+		};
+		rerender(renderBoard(true));
+		const flight = container.querySelector(".card-fly-to-player")!;
+		expect(flight.querySelector("img")).toBe(image);
+		expect(image.isConnected).toBe(true);
+		expect(flight.querySelector("button")).toBe(button);
+		expect(button).toBeDisabled();
+		expect({
+			background: face.className,
+			fontSize: content.style.fontSize,
+		}).toEqual(styling);
+		expect(flight).toHaveClass("pointer-events-none");
+		fireEvent.animationEnd(image); // Descendant animation must not end the flight.
+		expect(image.isConnected).toBe(true);
+		fireEvent.animationEnd(flight);
+		expect(image.isConnected).toBe(false);
+		expect(
+			container.querySelector('[data-card-id="card-2"]'),
+		).toBeInTheDocument();
+	},
+);

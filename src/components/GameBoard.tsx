@@ -13,7 +13,6 @@ import type { CardBackOption } from "../hooks/useCardBackSelector";
 import type { Card as CardType } from "../types";
 import { calculateGridDimensions } from "../utils/gridLayout";
 import { Card } from "./Card";
-import { CardLightbox } from "./CardLightbox";
 import { OpponentCursor, type CursorPeer } from "./online/OpponentCursor";
 
 interface GameBoardProps {
@@ -62,9 +61,7 @@ interface CachedCardPosition {
 
 // Type for local flying card state
 interface FlyingCardState {
-	playerId: number | undefined;
 	flyData: FlyData;
-	card: CardType;
 }
 
 export const GameBoard = ({
@@ -82,7 +79,6 @@ export const GameBoard = ({
 }: GameBoardProps) => {
 	counters.boardRenders++;
 	usePaintProbe(cards);
-	const [lightboxCardId, setLightboxCardId] = useState<string | null>(null);
 	const boardRef = useRef<HTMLDivElement>(null);
 	const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -248,8 +244,8 @@ export const GameBoard = ({
 		}
 	}, [cards]);
 
-	// Detect match transitions and trigger local flying animation
-	useEffect(() => {
+	// Start the flight before paint, keeping the existing face/image mounted.
+	useLayoutEffect(() => {
 		const currentMatched = new Set(
 			cards.filter((c) => c.isMatched).map((c) => c.id),
 		);
@@ -340,11 +336,7 @@ export const GameBoard = ({
 					playerId: flyData.playerId,
 				});
 
-				newFlyingCards.set(card.id, {
-					playerId: playerId,
-					flyData: flyData,
-					card: card,
-				});
+				newFlyingCards.set(card.id, { flyData });
 			}
 
 			setFlyingCards(newFlyingCards);
@@ -368,70 +360,13 @@ export const GameBoard = ({
 
 	return (
 		<>
-			{/* Flying cards overlay - now uses local state */}
-			{Array.from(flyingCards.entries()).map(([cardId, flyingState]) => {
-				const { flyData, card } = flyingState;
-
-				debugLog("[RENDER] Rendering flying card overlay", {
-					cardId: cardId,
-					style: {
-						left: `${flyData.startX}px`,
-						top: `${flyData.startY}px`,
-						"--end-x": `${flyData.endX - flyData.startX}px`,
-						"--end-y": `${flyData.endY - flyData.startY}px`,
-						"--final-y": `${flyData.finalY - flyData.startY}px`,
-						"--rotation-angle": `${flyData.rotationAngle}deg`,
-					},
-				});
-
-				return (
-					<div
-						key={`flying-${cardId}`}
-						className="fixed z-50 card-fly-to-player pointer-events-none"
-						onAnimationEnd={() => handleFlyingCardAnimationEnd(cardId)}
-						style={
-							{
-								left: `${flyData.startX}px`,
-								top: `${flyData.startY}px`,
-								"--end-x": `${flyData.endX - flyData.startX}px`,
-								"--end-y": `${flyData.endY - flyData.startY}px`,
-								"--final-y": `${flyData.finalY - flyData.startY}px`,
-								"--rotation-angle": `${flyData.rotationAngle}deg`,
-							} as React.CSSProperties & {
-								"--end-x": string;
-								"--end-y": string;
-								"--final-y": string;
-								"--rotation-angle": string;
-							}
-						}
-					>
-						<Card
-							card={card}
-							onClick={() => setLightboxCardId(cardId)}
-							size={cardSize}
-							useWhiteBackground={useWhiteCardBackground}
-							emojiSizePercentage={emojiSizePercentage}
-							cardBack={cardBack}
-						/>
-					</div>
-				);
-			})}
-
-			<CardLightbox
-				isOpen={!!lightboxCardId}
-				onClose={() => setLightboxCardId(null)}
-				card={
-					lightboxCardId
-						? cards.find((c) => c.id === lightboxCardId) || null
-						: null
-				}
-			/>
-
 			<div
 				ref={boardRef}
 				className="grid gap-2 max-w-none mx-auto justify-center relative"
 				style={{
 					perspective: "1000px",
+					// Let decorative flights pass over the score header.
+					zIndex: flyingCards.size > 0 ? 20 : undefined,
 					gridTemplateColumns: `repeat(${columns}, ${cardSize}px)`,
 					width: `${cardSize * columns + gap * (columns - 1)}px`,
 				}}
@@ -451,44 +386,25 @@ export const GameBoard = ({
 				)}
 
 				{cards.map((card, index) => {
-					// Keep the grid cell measurable after a match too. An immediate
-					// next-card press can batch away the intermediate selected render.
-					const rememberCell = (el: HTMLDivElement | null) => {
-						if (el) cardRefs.current.set(card.id, el);
-						else cardRefs.current.delete(card.id);
-					};
-					// Show placeholder for matched cards OR cards currently flying (local state)
-					const isFlying = flyingCards.has(card.id);
-					const shouldShowPlaceholder = card.isMatched || isFlying;
-
-					if (shouldShowPlaceholder) {
-						debugLog("[RENDER] Showing placeholder for card", {
-							cardId: card.id,
-							index,
-							isMatched: card.isMatched,
-							isFlying: isFlying,
-							reason: card.isMatched ? "matched" : "flying",
-						});
-					}
-
-					return shouldShowPlaceholder ? (
-						// Placeholder for matched cards (or cards that are flying)
+					const flight = flyingCards.get(card.id)?.flyData;
+					// A newly matched face stays mounted for the layout effect to start
+					// its flight. Only completed/historical matches drop the face.
+					const keepFace =
+						!card.isMatched ||
+						!!flight ||
+						!prevMatchedRef.current!.has(card.id);
+					return (
 						<div
 							key={card.id}
-							ref={rememberCell}
-							className="rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 opacity-15"
-							style={{
-								width: `${cardSize}px`,
-								height: `${cardSize}px`,
+							ref={(el) => {
+								if (el) cardRefs.current.set(card.id, el);
+								else cardRefs.current.delete(card.id);
 							}}
-						/>
-					) : (
-						<div
-							key={card.id}
-							ref={rememberCell}
-							className={isAnimating ? "card-fly-in" : ""}
+							className={isAnimating ? "relative card-fly-in" : "relative"}
 							style={
 								{
+									width: cardSize,
+									height: cardSize,
 									animationDelay: isAnimating ? `${index * 30}ms` : "0ms",
 									"--start-x":
 										isAnimating && animationData[index]
@@ -502,21 +418,52 @@ export const GameBoard = ({
 										isAnimating && animationData[index]
 											? `${animationData[index].rotation}deg`
 											: "0deg",
-								} as React.CSSProperties & {
-									"--start-x": string;
-									"--start-y": string;
-									"--rotation": string;
-								}
+								} as React.CSSProperties
 							}
 						>
-							<Card
-								card={card}
-								onClick={() => onCardClick(card.id)}
-								size={cardSize}
-								useWhiteBackground={useWhiteCardBackground}
-								emojiSizePercentage={emojiSizePercentage}
-								cardBack={cardBack}
+							<div
+								aria-hidden="true"
+								className="absolute inset-0 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 opacity-15 pointer-events-none"
+								style={{ visibility: card.isMatched ? "visible" : "hidden" }}
 							/>
+							{keepFace && (
+								<div
+									className={
+										flight
+											? "absolute inset-0 z-50 card-fly-to-player pointer-events-none"
+											: "absolute inset-0"
+									}
+									onAnimationEnd={
+										flight
+											? (event) => {
+													if (event.target === event.currentTarget)
+														handleFlyingCardAnimationEnd(card.id);
+												}
+											: undefined
+									}
+									style={
+										flight
+											? ({
+													"--end-x": `${flight.endX - flight.startX}px`,
+													"--end-y": `${flight.endY - flight.startY}px`,
+													"--final-y": `${flight.finalY - flight.startY}px`,
+													"--rotation-angle": `${flight.rotationAngle}deg`,
+												} as React.CSSProperties)
+											: undefined
+									}
+								>
+									<Card
+										card={card}
+										onClick={() => onCardClick(card.id)}
+										size={cardSize}
+										useWhiteBackground={useWhiteCardBackground}
+										emojiSizePercentage={emojiSizePercentage}
+										cardBack={cardBack}
+										forceGameplaySize
+										forceGameplayBackground
+									/>
+								</div>
+							)}
 						</div>
 					);
 				})}
