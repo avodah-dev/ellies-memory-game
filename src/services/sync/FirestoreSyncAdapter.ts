@@ -84,7 +84,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		return this.odahId;
 	}
 	private listen(stop: () => void) {
+		let active = true;
 		const dispose = () => {
+			if (!active) return;
+			active = false;
 			stop();
 			this.subscriptions.delete(dispose);
 		};
@@ -174,6 +177,9 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	}
 	async leaveRoom() {
 		if (!this.roomCode || !this.odahId) return;
+		// A guest's membership write revokes game-read permission. Detach before
+		// submitting it, rather than leaving the listener alive during cleanup.
+		for (const stop of this.subscriptions) stop();
 		await updateDoc(
 			doc(this.services.db, "rooms", this.roomCode),
 			this.isHost
@@ -185,7 +191,6 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		);
 		await this.presenceService?.stop();
 		this.presenceService = null;
-		for (const stop of this.subscriptions) stop();
 		this.roomCode = null;
 		this.isHost = false;
 	}
@@ -196,17 +201,23 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		return snap.exists() ? parseRoom(snap.data()) : null;
 	}
 	subscribeToRoom(code: string, callback: (room: Room | null) => void) {
-		return this.listen(
-			onSnapshot(
-				doc(this.services.db, "rooms", code),
-				(snapshot) =>
-					callback(snapshot.exists() ? parseRoom(snapshot.data()) : null),
-				(error) => {
-					console.error("Room subscription failed", error);
-					callback(null);
-				},
-			),
+		let active = true;
+		const stop = onSnapshot(
+			doc(this.services.db, "rooms", code),
+			(snapshot) => {
+				if (active)
+					callback(snapshot.exists() ? parseRoom(snapshot.data()) : null);
+			},
+			(error) => {
+				if (!active) return;
+				console.error("Room subscription failed", error);
+				callback(null);
+			},
 		);
+		return this.listen(() => {
+			active = false;
+			stop();
+		});
 	}
 	async updateRoomConfig(code: string, config: Partial<RoomConfig>) {
 		if (!this.isHost) throw new Error("Only host can update room config");
@@ -296,8 +307,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		if (!this.roomCode) throw new SyncError("disconnected", "Not in a room");
 		const code = this.roomCode;
 		const listenerId = nextId();
+		let active = true;
 		this.observer.listener(code, "subscribe", listenerId);
 		const fail = (error: Error) => {
+			if (!active) return;
 			this.observer.listener(code, "error", listenerId, error);
 			onError(error);
 		};
@@ -305,6 +318,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			doc(this.services.db, "games", this.roomCode),
 			{ includeMetadataChanges: true },
 			(snapshot) => {
+				if (!active) return;
 				this.observer.snapshotRaw(code, snapshot);
 				// Only confirmed server snapshots may replace optimistic state.
 				if (
@@ -322,6 +336,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			fail,
 		);
 		return this.listen(() => {
+			active = false;
 			this.observer.listener(code, "unsubscribe", listenerId);
 			stop();
 		});
