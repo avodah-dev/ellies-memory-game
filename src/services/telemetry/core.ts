@@ -1,4 +1,5 @@
 import type { RuntimeConfig } from "../../../shared/runtimeConfig";
+import { firestoreTransport } from "../../lib/firestoreTransport";
 import { prepareEvent } from "./events";
 import { clockProperties, getOffsets, type ClockOffsets } from "./clock";
 import type {
@@ -215,6 +216,7 @@ export function startTelemetry(
 	const device = getDeviceIdentity();
 	track("mm.session.start", {
 		...collectDeviceTraits(),
+		firestore_transport: firestoreTransport.name,
 		persisted: device.persisted,
 		is_new_device: device.isNew,
 		autocapture_enabled:
