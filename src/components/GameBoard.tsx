@@ -10,17 +10,11 @@ import {
 	useState,
 } from "react";
 import type { CardBackOption } from "../hooks/useCardBackSelector";
-import type { Card as CardType, CursorPosition } from "../types";
+import type { Card as CardType } from "../types";
 import { calculateGridDimensions } from "../utils/gridLayout";
 import { Card } from "./Card";
 import { CardLightbox } from "./CardLightbox";
-import { RemoteCursor } from "./online/RemoteCursor";
-
-interface RemoteCursorData {
-	position: CursorPosition;
-	playerName: string;
-	playerColor: string;
-}
+import { OpponentCursor, type CursorPeer } from "./online/OpponentCursor";
 
 interface GameBoardProps {
 	cards: CardType[];
@@ -38,7 +32,7 @@ interface GameBoardProps {
 		boardRect: DOMRect,
 	) => void;
 	onCursorLeave?: () => void;
-	remoteCursor?: RemoteCursorData | null;
+	remoteCursorPeer?: CursorPeer | null;
 }
 
 interface CardAnimationData {
@@ -84,7 +78,7 @@ export const GameBoard = ({
 	columns: columnsProp,
 	onCursorMove,
 	onCursorLeave,
-	remoteCursor,
+	remoteCursorPeer,
 }: GameBoardProps) => {
 	counters.boardRenders++;
 	usePaintProbe(cards);
@@ -447,13 +441,12 @@ export const GameBoard = ({
 				aria-label="Game board"
 			>
 				{/* Remote cursor overlay */}
-				{remoteCursor && (
-					<RemoteCursor
-						position={remoteCursor.position}
+				{remoteCursorPeer && (
+					<OpponentCursor
+						key={`${remoteCursorPeer.roomCode}:${remoteCursorPeer.opponentOdahId}`}
+						{...remoteCursorPeer}
 						cardSize={cardSize}
 						gap={8}
-						playerName={remoteCursor.playerName}
-						playerColor={remoteCursor.playerColor}
 					/>
 				)}
 

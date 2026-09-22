@@ -4,7 +4,7 @@
 
 `App.tsx` owns one `useAppModel` lifecycle and renders `AppShell`. TanStack routes render the home, setup, lobby, gameplay and results screens through `Outlet`. The shell owns shared overlays. The typed Zustand `appModelStore` publishes the model to route screens without React Context. `useAppModel` still coordinates setup/navigation and is the next place to split by feature as behavior changes; moving JSX into routes is the first incremental boundary, not a full rewrite.
 
-`useBoardLayout` owns measurement/resize listeners and `useFullscreen` owns fullscreen behavior. Persisted preferences live in `settingsStore`; transient UI and online membership/presence have separate stores. There is no second unused game-state store. Prefer specific Zustand selectors so cursor/presence changes do not wake unrelated consumers.
+`useBoardLayout` owns measurement/resize listeners and `useFullscreen` owns fullscreen behavior. Persisted preferences live in `settingsStore`; transient UI and online membership/presence have separate stores. There is no second unused game-state store. Prefer specific Zustand selectors so presence changes do not wake unrelated consumers. Remote cursor positions are local state inside the `OpponentCursor` overlay: its RTDB subscription never publishes the app model or rerenders the board/cards. Only room/opponent identity and display metadata cross the model; the board keys the overlay by that identity. `useCursorBroadcast` sends local mouse movement without receive state. The existing service throttle and cursor visuals are unchanged.
 
 ## Rules and lifecycle
 

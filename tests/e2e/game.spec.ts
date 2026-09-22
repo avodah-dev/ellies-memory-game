@@ -1152,3 +1152,85 @@ test("a served build change offers an explicit reload without interrupting play"
 		await expect(page).toHaveURL(new RegExp(path + "$"));
 	}
 });
+
+test("remote cursor motion does not republish the app or rerender the board and cards", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await browser.newContext({
+		...test.info().project.use,
+		baseURL: test.info().project.use.baseURL,
+	});
+	watchApplicationErrors(guestContext, applicationErrors);
+	await localRequestsOnly(guestContext);
+	try {
+		const guest = await guestContext.newPage();
+		await home(host);
+		await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await host.getByLabel("Your online name").fill("Cursor Host");
+		await host.getByRole("button", { name: /create.*room/i }).click();
+		await expect(host).toHaveURL(/online\/waiting$/);
+		const code = (await host.getByTestId("room-code").innerText()).trim();
+		await home(guest);
+		await guest.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await guest.getByLabel("Your online name").fill("Cursor Guest");
+		await guest.getByRole("button", { name: /join.*room/i }).click();
+		await guest.getByPlaceholder("ABCD").fill(code);
+		await guest.getByRole("button", { name: "Join Game", exact: true }).click();
+		await expect(guest).toHaveURL(/online\/waiting$/);
+		await host.getByRole("button", { name: "Start Game", exact: true }).click();
+		for (const p of [host, guest]) await expect(p).toHaveURL(/online\/game$/);
+		const rect = await host
+			.getByRole("application", { name: "Game board" })
+			.boundingBox();
+		expect(rect).not.toBeNull();
+		const start = await guest.evaluate(() => performance.now());
+		// Cover a complete five-second sampling window after mount/route work settles.
+		// Native moves exercise the unchanged RTDB broadcaster and real receive path.
+		const until = Date.now() + 11000;
+		let i = 0;
+		while (Date.now() < until) {
+			await host.mouse.move(
+				rect!.x + rect!.width * (0.2 + (i % 30) / 50),
+				rect!.y + rect!.height * 0.4,
+			);
+			i++;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		await expect(
+			guest.getByRole("img", { name: "Cursor Host's cursor", exact: true }),
+		).toBeVisible();
+		await expect
+			.poll(async () => {
+				const frames = (await diagnostics(guest)).filter(
+					(r) =>
+						r.message === "mm.perf.frames" &&
+						Number(r.context.t_mono) - Number(r.context.ms_window) >= start &&
+						Number(r.context.cursor_rx) >= 20,
+				);
+				return frames.length;
+			})
+			.toBeGreaterThan(0);
+		const frames = (await diagnostics(guest)).filter(
+			(r) =>
+				r.message === "mm.perf.frames" &&
+				Number(r.context.t_mono) - Number(r.context.ms_window) >= start &&
+				Number(r.context.cursor_rx) >= 20,
+		);
+		for (const row of frames) {
+			expect(row.context.app_renders).toBe(0);
+			expect(row.context.model_publishes).toBe(0);
+			expect(row.context.board_renders).toBe(0);
+			expect(row.context.card_renders).toBe(0);
+		}
+		await host.mouse.move(1, 1);
+		await expect(
+			guest.getByRole("img", { name: "Cursor Host's cursor", exact: true }),
+		).toHaveCount(0);
+		await card(host, 0).click();
+		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
+	} finally {
+		await guestContext.close();
+	}
+});
