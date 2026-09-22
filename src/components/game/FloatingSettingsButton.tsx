@@ -19,7 +19,7 @@ export const FloatingSettingsButton = ({
 		<button
 			type="button"
 			onClick={onClick}
-			className="fixed bottom-5 right-5 z-10 p-3 text-base font-semibold bg-gray-500 hover:bg-gray-600 text-white rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
+			className="fixed bottom-5 right-5 z-30 p-3 text-base font-semibold bg-gray-500 hover:bg-gray-600 text-white rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
 			title="Settings"
 		>
 			<svg

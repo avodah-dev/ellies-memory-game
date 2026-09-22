@@ -19,8 +19,8 @@
 
 @keyframes cardFlyToPlayer {
 	0% {
-		opacity: 1;
-		transform: translate(0, 0) scale(1) rotate(0deg);
+		opacity: var(--flight-start-opacity);
+		transform: var(--flight-start-transform);
 	}
 	20% {
 		opacity: 1;
