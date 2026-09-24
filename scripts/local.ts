@@ -140,11 +140,12 @@ try {
 		"checks",
 		"vite",
 		"container",
+		"container-image",
 	] as const;
 	type Mode = (typeof modes)[number];
 	if (!requestedMode || !modes.includes(requestedMode as Mode))
 		throw new Error(
-			"Usage: bun scripts/local.ts dev|verify|release|checks|vite|container",
+			"Usage: bun scripts/local.ts dev|verify|release|checks|vite|container|container-image",
 		);
 	const mode = requestedMode as Mode;
 	validatePorts();
@@ -181,6 +182,7 @@ try {
 				checks: ["test:integration", "test:coverage"],
 				vite: ["build", "test:e2e"],
 				container: ["test:container"],
+				"container-image": ["test:container:image"],
 				verify: ["test:integration", "test:coverage", "build", "test:e2e"],
 				release: [
 					"test:integration",
