@@ -8,8 +8,9 @@ import {
 	signInAnonymously,
 } from "firebase/auth";
 import { connectDatabaseEmulator, getDatabase } from "firebase/database";
-import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import { connectFirestoreEmulator, initializeFirestore } from "firebase/firestore";
 import ports from "../../local-ports.json";
+import { firestoreTransport } from "./firestoreTransport";
 
 export const emulatorProject = "demo-matchimus";
 export function createFirebaseServices(
@@ -41,7 +42,7 @@ export function createFirebaseServices(
 				? inMemoryPersistence
 				: browserLocalPersistence,
 	});
-	const db = getFirestore(app, "main-firestore");
+	const db = initializeFirestore(app, firestoreTransport.settings, "main-firestore");
 	const rtdb = getDatabase(app);
 	if (mode === "emulator") {
 		connectAuthEmulator(auth, `http://127.0.0.1:${ports.auth}`, {

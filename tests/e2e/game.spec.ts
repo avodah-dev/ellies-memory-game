@@ -954,6 +954,14 @@ for (const transport of ["default", "polling"] as const) {
 		watchApplicationErrors(guestContext, applicationErrors);
 		await localRequestsOnly(guestContext);
 		let usedPolling = false;
+		const firestoreRequests: string[][] = [[], []];
+		for (const [index, player] of [host, guest].entries()) {
+			player.on("request", (request) => {
+				const url = new URL(request.url());
+				if (url.port === String(ports.firestore) && url.pathname.endsWith("/Listen/channel"))
+					firestoreRequests[index].push(request.resourceType());
+			});
+		}
 		if (transport === "polling") {
 			// Exercise Firebase's real HTTP transport after a failed socket handshake.
 			await guestContext.routeWebSocket(
@@ -995,6 +1003,24 @@ for (const transport of ["default", "polling"] as const) {
 			await host.getByRole("button", { name: /start game/i }).click();
 			await expect(host).toHaveURL(/\/online\/game$/);
 			await expect(guest).toHaveURL(/\/online\/game$/);
+			// Resolve a mismatch in each direction through the actual listeners.
+			for (const [active, receiver] of [[host, guest], [guest, host]]) {
+				await expect(active.getByText("Your Turn!", { exact: true })).toBeVisible();
+				await card(active, 0).click();
+				await card(active, 2).click();
+				await expect(receiver.getByText("Your Turn!", { exact: true })).toBeVisible();
+				await expect(card(receiver, 0)).toHaveAttribute("aria-pressed", "false");
+				await expect(card(receiver, 2)).toHaveAttribute("aria-pressed", "false");
+			}
+			for (const requests of firestoreRequests) {
+				expect(requests).toContain("xhr");
+				expect(requests).not.toContain("fetch");
+			}
+			for (const player of [host, guest]) {
+				await expect.poll(async () => (await diagnostics(player)).some(row =>
+					row.message === "mm.session.start" && row.context.firestore_transport === "long-polling-xhr",
+				)).toBe(true);
+			}
 			await card(host, 0).click();
 			await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
 			if (transport === "default") await expectFlipDiagnostics(host, guest);
