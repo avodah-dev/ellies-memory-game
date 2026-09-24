@@ -1,29 +1,24 @@
 import { counters } from "../services/telemetry/core";
 /**
- * useCursorSync - Hook for syncing cursor positions in online mode
+ * useCursorBroadcast - Broadcast local cursor positions without subscribing the app model
  *
  * Handles:
  * - Broadcasting local cursor position to Firebase RTDB
- * - Subscribing to opponent's cursor position
  * - Converting between pixel and grid-relative coordinates (0-8 for x, 0-5 for y)
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { CursorService } from "../services/sync/CursorService";
-import type { CursorPosition } from "../types";
 
-interface UseCursorSyncOptions {
+interface UseCursorBroadcastOptions {
 	roomCode: string;
 	localOdahId: string;
-	opponentOdahId: string | null;
 	enabled: boolean;
 	cardSize: number; // Size of each card in pixels
 	gap?: number; // Gap between cards in pixels (default: 8px for gap-2)
 }
 
-interface UseCursorSyncResult {
-	/** Opponent's cursor position (grid-relative: 0-8 for x, 0-5 for y) */
-	opponentCursor: CursorPosition | null;
+interface UseCursorBroadcastResult {
 	/** Handler for mouse move events on the game board */
 	handleMouseMove: (
 		event: React.MouseEvent<HTMLDivElement>,
@@ -33,21 +28,11 @@ interface UseCursorSyncResult {
 	handleMouseLeave: () => void;
 }
 
-export function useCursorSync(
-	options: UseCursorSyncOptions,
-): UseCursorSyncResult {
-	const {
-		roomCode,
-		localOdahId,
-		opponentOdahId,
-		enabled,
-		cardSize,
-		gap = 8,
-	} = options;
+export function useCursorBroadcast(
+	options: UseCursorBroadcastOptions,
+): UseCursorBroadcastResult {
+	const { roomCode, localOdahId, enabled, cardSize, gap = 8 } = options;
 
-	const [opponentCursor, setOpponentCursor] = useState<CursorPosition | null>(
-		null,
-	);
 	const cursorServiceRef = useRef<CursorService | null>(null);
 
 	// Initialize cursor service for local player
@@ -60,38 +45,22 @@ export function useCursorSync(
 		cursorServiceRef.current = service;
 
 		service.start().catch((error) => {
-			console.error("[useCursorSync] Failed to start cursor service:", error);
+			console.error(
+				"[useCursorBroadcast] Failed to start cursor service:",
+				error,
+			);
 		});
 
 		return () => {
 			service.stop().catch((error) => {
-				console.error("[useCursorSync] Failed to stop cursor service:", error);
+				console.error(
+					"[useCursorBroadcast] Failed to stop cursor service:",
+					error,
+				);
 			});
 			cursorServiceRef.current = null;
 		};
 	}, [enabled, roomCode, localOdahId]);
-
-	// Subscribe to opponent's cursor
-	useEffect(() => {
-		if (!enabled || !roomCode || !opponentOdahId) {
-			setOpponentCursor(null);
-			return;
-		}
-
-		const unsubscribe = CursorService.subscribeToCursor(
-			roomCode,
-			opponentOdahId,
-			(position) => {
-				counters.cursorRx++;
-				setOpponentCursor(position);
-			},
-		);
-
-		return () => {
-			unsubscribe();
-			setOpponentCursor(null);
-		};
-	}, [enabled, roomCode, opponentOdahId]);
 
 	// Handle mouse move - convert pixel position to grid-relative coordinates
 	const handleMouseMove = useCallback(
@@ -126,7 +95,6 @@ export function useCursorSync(
 	}, [enabled]);
 
 	return {
-		opponentCursor,
 		handleMouseMove,
 		handleMouseLeave,
 	};
