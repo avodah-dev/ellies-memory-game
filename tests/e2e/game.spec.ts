@@ -1314,3 +1314,53 @@ test("remote cursor motion does not republish the app or rerender the board and 
 		await guestContext.close();
 	}
 });
+
+test("a replacement guest can start after another guest leaves the waiting room", async ({ browser, page: host, applicationErrors }) => {
+	const guests = await Promise.all([0, 1].map(() => browser.newContext({
+		...test.info().project.use,
+		baseURL: test.info().project.use.baseURL,
+	})));
+	for (const context of guests) {
+		watchApplicationErrors(context, applicationErrors);
+		await localRequestsOnly(context);
+	}
+	try {
+		await home(host);
+		await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await host.getByLabel("Your online name").fill("Lobby Host");
+		await host.getByRole("button", { name: /create.*room/i }).click();
+		await expect(host).toHaveURL(/\/online\/waiting$/);
+		const code = (await host.getByTestId("room-code").innerText()).trim();
+		const join = async (context: BrowserContext, name: string) => {
+			const page = await context.newPage();
+			await home(page);
+			await page.getByRole("button", { name: /Play Online Challenge/ }).click();
+			await page.getByLabel("Your online name").fill(name);
+			await page.getByRole("button", { name: /join.*room/i }).click();
+			await page.getByPlaceholder("ABCD").fill(code);
+			await page.getByRole("button", { name: "Join Game", exact: true }).click();
+			await expect(page).toHaveURL(/\/online\/waiting$/);
+			return page;
+		};
+		const departed = await join(guests[0], "Departing Guest");
+		const start = host.getByRole("button", { name: "Start Game", exact: true });
+		await expect(start).toBeEnabled();
+		await departed.getByRole("button", { name: "Leave Room", exact: true }).click();
+		await expect(departed).toHaveURL(/\/online$/);
+		await expect(start).toBeDisabled();
+		await expect(host.getByText("Departing Guest", { exact: true })).toHaveCount(0);
+		const replacement = await join(guests[1], "Replacement Guest");
+		await expect(host.getByText("Replacement Guest", { exact: true })).toBeVisible();
+		await expect(start).toBeEnabled();
+		await start.click();
+		for (const page of [host, replacement]) {
+			await expect(page).toHaveURL(/\/online\/game$/);
+			await expect(page.getByRole("application", { name: "Game board" })).toBeVisible();
+			await expect(page.getByText("Departing Guest", { exact: true })).toHaveCount(0);
+		}
+		await card(host, 0).click();
+		await expect(card(replacement, 0)).toHaveAttribute("aria-pressed", "true");
+	} finally {
+		await Promise.all(guests.map(context => context.close()));
+	}
+});
