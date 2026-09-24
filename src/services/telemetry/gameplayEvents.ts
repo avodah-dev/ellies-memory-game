@@ -80,14 +80,15 @@ export interface GameplayEvents {
 		ms_queue_wait: number;
 	};
 	"mm.sync.write.dropped": Detail & { write_id: string; reason: string };
-	"mm.sync.write.start": Detail & { write_id: string; transaction_id: string };
+	"mm.sync.write.start": Detail & { write_id: string; transaction_id?: string };
 	"mm.sync.write.result": Detail & {
 		write_id: string;
-		transaction_id: string;
+		transaction_id?: string;
 		ok: boolean;
-		attempts: number;
-		ms_tx_total: number;
+		attempts?: number;
+		ms_tx_total?: number;
 	};
+	"mm.sync.write.inflight": Detail & { phase: string; inflight: number };
 	"mm.sync.tx.phase": Detail & {
 		transaction_id: string;
 		phase: string;

@@ -263,9 +263,10 @@ vi.mock("./hooks/useOnlineGame", () => ({
 	}),
 }));
 
-vi.mock("./hooks/useCursorSync", () => ({
-	useCursorSync: () => ({
-		remoteCursors: [],
+vi.mock("./hooks/useCursorBroadcast", () => ({
+	useCursorBroadcast: () => ({
+		handleMouseMove: vi.fn(),
+		handleMouseLeave: vi.fn(),
 	}),
 }));
 

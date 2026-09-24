@@ -1,4 +1,5 @@
 import { useOnlineConnection } from "./useOnlineConnection";
+import { useOnlineStore } from "../stores/onlineStore";
 /**
  * useOnlineGame - Hook for online multiplayer game logic
  *
@@ -71,6 +72,7 @@ export function useOnlineGame(options: UseOnlineGameOptions) {
 	);
 
 	const onlineReady = useOnlineConnection(roomCode);
+	const localUserId = useOnlineStore((state) => state.odahId);
 
 	// Use the game controller with online mode configuration
 	const controller = useGameController({
@@ -82,6 +84,7 @@ export function useOnlineGame(options: UseOnlineGameOptions) {
 		effectManager,
 		syncAdapter,
 		localPlayerSlot,
+		localUserId,
 		roomCode,
 	});
 

@@ -31,6 +31,7 @@ let roomUnsubscribe: (() => void) | null = null;
 const startRoomSubscription = (
 	roomCode: string,
 	set: (partial: Partial<OnlineStoreState>) => void,
+	get: () => OnlineStoreState,
 ) => {
 	// Clean up any existing subscription first
 	if (roomUnsubscribe) {
@@ -40,7 +41,7 @@ const startRoomSubscription = (
 
 	const adapter = getFirestoreSyncAdapter();
 	roomUnsubscribe = adapter.subscribeToRoom(roomCode, (room) => {
-		set({ room });
+		set({ room, ...deriveRoomPresence(get(), room) });
 	});
 };
 
@@ -71,6 +72,9 @@ interface OnlineStoreState {
 	playerName: string;
 
 	// Presence
+	// Keep the RTDB snapshot so a later Firestore membership update can admit
+	// a player even when their presence notification arrived first.
+	rawPresenceData: Record<string, PresenceData>;
 	presenceData: Record<string, PresenceData>;
 	opponentConnected: boolean;
 	opponentDisconnectedAt: number | null; // Timestamp when opponent disconnect was detected
@@ -151,11 +155,44 @@ const initialState: OnlineStoreState = {
 	roomCode: null,
 	isHost: false,
 	playerName: "Player",
+	rawPresenceData: {},
 	presenceData: {},
 	opponentConnected: false,
 	opponentDisconnectedAt: null,
 	error: null,
 };
+
+function deriveRoomPresence(
+	state: OnlineStoreState,
+	room = state.room,
+	rawPresenceData = state.rawPresenceData,
+) {
+	// Presence records survive leaving a room. Membership, not the number of
+	// historical RTDB records, determines which two people are playing.
+	const members = Object.entries(rawPresenceData).filter(
+		([id, player]) => room?.playerSlots[id] === player.slot,
+	);
+	// Ordinary moves also update the room's activity timestamp. Preserve the
+	// presence reference when membership is unchanged to avoid waking its consumers.
+	const presenceData =
+		members.length === Object.keys(state.presenceData).length &&
+		members.every(([id, player]) => state.presenceData[id] === player)
+			? state.presenceData
+			: Object.fromEntries(members);
+	const opponentConnected = Object.entries(presenceData).some(
+		([id, player]) => id !== state.odahId && player.online,
+	);
+	return {
+		rawPresenceData,
+		presenceData,
+		opponentConnected,
+		opponentDisconnectedAt: opponentConnected
+			? null
+			: state.opponentConnected
+				? Date.now()
+				: state.opponentDisconnectedAt,
+	};
+}
 
 const ONLINE_NAME_STORAGE_KEY = "onlinePlayerName";
 const ONLINE_CARD_PACK_KEY = "onlineCardPack";
@@ -254,6 +291,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				room: null,
 				roomCode: null,
 				isHost: false,
+				rawPresenceData: {},
 				presenceData: {},
 				opponentConnected: false,
 				opponentDisconnectedAt: null,
@@ -294,7 +332,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				});
 
 				// Start room subscription automatically
-				startRoomSubscription(roomCode, set);
+				startRoomSubscription(roomCode, set, get);
 
 				return roomCode;
 			} catch (error) {
@@ -335,7 +373,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				});
 
 				// Start room subscription automatically
-				startRoomSubscription(normalizedRoomCode, set);
+				startRoomSubscription(normalizedRoomCode, set, get);
 
 				return room;
 			} catch (error) {
@@ -360,6 +398,7 @@ export const useOnlineStore = create<OnlineStore>()(
 					room: null,
 					roomCode: null,
 					isHost: false,
+					rawPresenceData: {},
 					presenceData: {},
 					opponentConnected: false,
 					opponentDisconnectedAt: null,
@@ -500,6 +539,7 @@ export const useOnlineStore = create<OnlineStore>()(
 			return PresenceService.subscribeToRoomPresence(
 				roomCode,
 				(presenceData) => {
+					if (get().roomCode !== roomCode) return;
 					// Convert internal presence data to external format
 					const converted: Record<string, PresenceData> = {};
 					for (const [id, data] of Object.entries(presenceData)) {
@@ -514,42 +554,14 @@ export const useOnlineStore = create<OnlineStore>()(
 						};
 					}
 
-					// Check if opponent is connected
-					const { odahId, opponentConnected: prevOpponentConnected } = get();
-					const opponentConnected = Object.values(converted).some(
-						(p) => p.odahId !== odahId && p.online,
-					);
-
-					// Track disconnect timing for overlay countdown
-					let opponentDisconnectedAt = get().opponentDisconnectedAt;
-					if (!opponentConnected && prevOpponentConnected) {
-						// Opponent just disconnected - record timestamp
-						opponentDisconnectedAt = Date.now();
-						console.log(
-							"[PRESENCE] Opponent disconnected at:",
-							opponentDisconnectedAt,
-						);
-					} else if (opponentConnected && !prevOpponentConnected) {
-						// Opponent reconnected - clear timestamp
-						opponentDisconnectedAt = null;
-						console.log("[PRESENCE] Opponent reconnected");
-					}
-
-					set({
-						presenceData: converted,
-						opponentConnected,
-						opponentDisconnectedAt,
-					});
+					get().setPresenceData(converted);
 				},
 			);
 		},
 
 		setPresenceData: (data: Record<string, PresenceData>) => {
-			const { odahId } = get();
-			const opponentConnected = Object.values(data).some(
-				(p) => p.odahId !== odahId && p.online,
-			);
-			set({ presenceData: data, opponentConnected });
+			const state = get();
+			set(deriveRoomPresence(state, state.room, data));
 		},
 
 		// Error handling

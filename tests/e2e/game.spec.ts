@@ -565,7 +565,7 @@ test("primary mouse press flips before release, drag-off stays flipped, keyboard
 	).toBe(true);
 });
 
-test("a flying matched card cannot intercept a press on the next playable card", async ({
+test("a matched flight keeps its decoded face and cannot intercept the next press", async ({
 	page,
 	context,
 }) => {
@@ -574,15 +574,20 @@ test("a flying matched card cannot intercept a press on the next playable card",
 	await page.getByRole("button", { name: /Same Device Play/ }).click();
 	await page.getByRole("button", { name: /Dinosaur Adventure Travel/ }).click();
 	await page.getByRole("button", { name: "20 8×5 Hard" }).click();
+	await page.clock.install();
+	await page.clock.pauseAt(new Date());
 	await page
 		.getByRole("button", { name: "🎮 Start Game", exact: true })
 		.click();
 	const board = page.getByRole("application", { name: "Game board" });
 	await expect(board).toBeVisible();
-	await board.evaluate(async (e) => {
-		await Promise.allSettled(
-			e.getAnimations({ subtree: true }).map((a) => a.finished),
-		);
+	// Keep React's deal timer pending while freezing real CSS deal animations
+	// at a visible, still-rotated pose. This exercises early matches deterministically.
+	await board.evaluate((e) => {
+		for (const a of e.getAnimations({ subtree: true })) {
+			a.pause();
+			a.currentTime = Number(a.effect!.getTiming().delay) + 750;
+		}
 	});
 	const bottom = await board.locator("button[data-card-id]").evaluateAll(
 		(nodes) =>
@@ -598,9 +603,68 @@ test("a flying matched card cannot intercept a press on the next playable card",
 	await page.addStyleTag({
 		content: ".card-fly-to-player { animation-play-state: paused !important; }",
 	});
+	// The same decoded image and face must survive the match-to-flight transition.
+	const original = await card(page, bottom).locator("img").elementHandle();
+	expect(original).not.toBeNull();
+	await original!.evaluate(async (image) => {
+		await (image as HTMLImageElement).decode();
+	});
+	const faceStyle = await original!.evaluate((image) => {
+		const content = image.parentElement!,
+			face = content.parentElement!;
+		return {
+			background: getComputedStyle(face).backgroundImage,
+			color: getComputedStyle(face).backgroundColor,
+			font: getComputedStyle(content).fontSize,
+		};
+	});
 	await card(page, bottom).click();
 	await card(page, bottom ^ 1).click();
+	// A third press resolves this known match immediately, before the deal ends.
+	await card(page, 0).click();
 	await expect(page.locator(".card-fly-to-player").first()).toBeVisible();
+	expect(
+		await page
+			.locator(".card-fly-to-player")
+			.first()
+			.evaluate((e) => ({
+				parentTransform: getComputedStyle(e.parentElement!).transform,
+				parentAnimation: getComputedStyle(e.parentElement!).animationName,
+				initialTransform: (e as HTMLElement).style.getPropertyValue(
+					"--flight-start-transform",
+				),
+			})),
+	).toEqual({
+		parentTransform: "none",
+		parentAnimation: "none",
+		initialTransform: expect.stringMatching(/^matrix/),
+	});
+	// Let telemetry timers proceed; flights stay paused by the explicit CSS rule.
+	await page.clock.resume();
+	const flightImage = page.locator(
+		`.card-fly-to-player [data-card-id="card-${bottom}"] img`,
+	);
+	expect(
+		await flightImage.evaluate((image, old) => image === old, original),
+	).toBe(true);
+	expect(
+		await original!.evaluate((image) => {
+			const content = image.parentElement!,
+				face = content.parentElement!;
+			return {
+				background: getComputedStyle(face).backgroundImage,
+				color: getComputedStyle(face).backgroundColor,
+				font: getComputedStyle(content).fontSize,
+			};
+		}),
+	).toEqual(faceStyle);
+	expect(
+		await original!.evaluate(
+			(image) =>
+				(image as HTMLImageElement).complete &&
+				(image as HTMLImageElement).naturalWidth > 0,
+		),
+	).toBe(true);
 	// Scrub the actual flight keyframes until they cover a playable card center;
 	// preserve its real geometry and deliver native input through that decoration.
 	const point = await page.evaluate(async () => {
@@ -614,7 +678,7 @@ test("a flying matched card cannot intercept a press on the next playable card",
 			}
 			await new Promise(requestAnimationFrame);
 			for (const card of document.querySelectorAll(
-				'main [role="application"] button[data-card-id]:enabled',
+				'main [role="application"] button[data-card-id]:enabled[aria-pressed="false"]',
 			)) {
 				const c = card.getBoundingClientRect(),
 					x = c.x + c.width / 2,
@@ -657,6 +721,22 @@ test("a flying matched card cannot intercept a press on the next playable card",
 			),
 		)
 		.toBe(true);
+	// An oversized landscape board must not cover Settings during a flight.
+	await page.setViewportSize({ width: 700, height: 400 });
+	const settings = page.getByTitle("Settings", { exact: true }).last();
+	await expect(settings).toBeVisible();
+	await board.evaluate(
+		(e, rect) => {
+			e.style.position = "fixed";
+			e.style.left = rect.x + "px";
+			e.style.top = rect.y + "px";
+		},
+		(await settings.boundingBox())!,
+	);
+	await settings.click();
+	await expect(
+		page.getByRole("button", { name: "Reload App", exact: true }),
+	).toBeVisible();
 });
 
 test("staggered contacts reach both cards during the first flip", async ({
@@ -833,6 +913,10 @@ test("named players start a 16-pair Thanksgiving game with strict rules", async 
 				page.locator('main img[src*="/deck-images/thanksgiving/"]'),
 			).toHaveCount(32);
 		}
+		const moveReads: string[] = [];
+		host.on("request", request => {
+			if (/batchGet|beginTransaction/i.test(request.url())) moveReads.push(request.url());
+		});
 		await card(host, 0).click();
 		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
 		await card(host, 1).click();
@@ -845,12 +929,13 @@ test("named players start a 16-pair Thanksgiving game with strict rules", async 
 		await expect.poll(async () => {
 			const rows = await diagnostics(host);
 			const resolution = rows.find(r => r.message === "mm.game.match" && r.context.trigger === "next-card");
-			const writes = rows.filter(r => r.message === "mm.sync.write.result" && r.context.ok === true);
+			const writes = rows.filter(r => r.message === "mm.sync.write.result" && r.context.ok === true && r.context.write_mode === "batch");
 			const matchWrite = writes.find(r => r.context.context === "match:complete");
 			const flipWrite = writes.find(r => r.context.context === "flip:card-2");
 			return Boolean(resolution && matchWrite && flipWrite &&
 				Number(flipWrite.context.sync_version) === Number(matchWrite.context.sync_version) + 1);
 		}).toBe(true);
+		expect(moveReads, "ordinary flips and match resolution must not read before writing").toEqual([]);
 	} finally {
 		await guestContext.close();
 	}
@@ -1171,5 +1256,137 @@ test("a served build change offers an explicit reload without interrupting play"
 		await expect(page.getByRole("button", { name: "Clear Cache & Reload" })).toBeVisible();
 		await page.getByRole("button", { name: "Cancel", exact: true }).click();
 		await expect(page).toHaveURL(new RegExp(path + "$"));
+	}
+});
+
+test("remote cursor motion does not republish the app or rerender the board and cards", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await browser.newContext({
+		...test.info().project.use,
+		baseURL: test.info().project.use.baseURL,
+	});
+	watchApplicationErrors(guestContext, applicationErrors);
+	await localRequestsOnly(guestContext);
+	try {
+		const guest = await guestContext.newPage();
+		await home(host);
+		await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await host.getByLabel("Your online name").fill("Cursor Host");
+		await host.getByRole("button", { name: /create.*room/i }).click();
+		await expect(host).toHaveURL(/online\/waiting$/);
+		const code = (await host.getByTestId("room-code").innerText()).trim();
+		await home(guest);
+		await guest.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await guest.getByLabel("Your online name").fill("Cursor Guest");
+		await guest.getByRole("button", { name: /join.*room/i }).click();
+		await guest.getByPlaceholder("ABCD").fill(code);
+		await guest.getByRole("button", { name: "Join Game", exact: true }).click();
+		await expect(guest).toHaveURL(/online\/waiting$/);
+		await host.getByRole("button", { name: "Start Game", exact: true }).click();
+		for (const p of [host, guest]) await expect(p).toHaveURL(/online\/game$/);
+		const rect = await host
+			.getByRole("application", { name: "Game board" })
+			.boundingBox();
+		expect(rect).not.toBeNull();
+		const start = await guest.evaluate(() => performance.now());
+		// Cover a complete five-second sampling window after mount/route work settles.
+		// Native moves exercise the unchanged RTDB broadcaster and real receive path.
+		const until = Date.now() + 11000;
+		let i = 0;
+		while (Date.now() < until) {
+			await host.mouse.move(
+				rect!.x + rect!.width * (0.2 + (i % 30) / 50),
+				rect!.y + rect!.height * 0.4,
+			);
+			i++;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		await expect(
+			guest.getByRole("img", { name: "Cursor Host's cursor", exact: true }),
+		).toBeVisible();
+		await expect
+			.poll(async () => {
+				const frames = (await diagnostics(guest)).filter(
+					(r) =>
+						r.message === "mm.perf.frames" &&
+						Number(r.context.t_mono) - Number(r.context.ms_window) >= start &&
+						Number(r.context.cursor_rx) >= 20,
+				);
+				return frames.length;
+			})
+			.toBeGreaterThan(0);
+		const frames = (await diagnostics(guest)).filter(
+			(r) =>
+				r.message === "mm.perf.frames" &&
+				Number(r.context.t_mono) - Number(r.context.ms_window) >= start &&
+				Number(r.context.cursor_rx) >= 20,
+		);
+		for (const row of frames) {
+			expect(row.context.app_renders).toBe(0);
+			expect(row.context.model_publishes).toBe(0);
+			expect(row.context.board_renders).toBe(0);
+			expect(row.context.card_renders).toBe(0);
+		}
+		await host.mouse.move(1, 1);
+		await expect(
+			guest.getByRole("img", { name: "Cursor Host's cursor", exact: true }),
+		).toHaveCount(0);
+		await card(host, 0).click();
+		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
+	} finally {
+		await guestContext.close();
+	}
+});
+
+test("a replacement guest can start after another guest leaves the waiting room", async ({ browser, page: host, applicationErrors }) => {
+	const guests = await Promise.all([0, 1].map(() => browser.newContext({
+		...test.info().project.use,
+		baseURL: test.info().project.use.baseURL,
+	})));
+	for (const context of guests) {
+		watchApplicationErrors(context, applicationErrors);
+		await localRequestsOnly(context);
+	}
+	try {
+		await home(host);
+		await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+		await host.getByLabel("Your online name").fill("Lobby Host");
+		await host.getByRole("button", { name: /create.*room/i }).click();
+		await expect(host).toHaveURL(/\/online\/waiting$/);
+		const code = (await host.getByTestId("room-code").innerText()).trim();
+		const join = async (context: BrowserContext, name: string) => {
+			const page = await context.newPage();
+			await home(page);
+			await page.getByRole("button", { name: /Play Online Challenge/ }).click();
+			await page.getByLabel("Your online name").fill(name);
+			await page.getByRole("button", { name: /join.*room/i }).click();
+			await page.getByPlaceholder("ABCD").fill(code);
+			await page.getByRole("button", { name: "Join Game", exact: true }).click();
+			await expect(page).toHaveURL(/\/online\/waiting$/);
+			return page;
+		};
+		const departed = await join(guests[0], "Departing Guest");
+		const start = host.getByRole("button", { name: "Start Game", exact: true });
+		await expect(start).toBeEnabled();
+		await departed.getByRole("button", { name: "Leave Room", exact: true }).click();
+		await expect(departed).toHaveURL(/\/online$/);
+		await expect(start).toBeDisabled();
+		await expect(host.getByText("Departing Guest", { exact: true })).toHaveCount(0);
+		const replacement = await join(guests[1], "Replacement Guest");
+		await expect(host.getByText("Replacement Guest", { exact: true })).toBeVisible();
+		await expect(start).toBeEnabled();
+		await start.click();
+		for (const page of [host, replacement]) {
+			await expect(page).toHaveURL(/\/online\/game$/);
+			await expect(page.getByRole("application", { name: "Game board" })).toBeVisible();
+			await expect(page.getByText("Departing Guest", { exact: true })).toHaveCount(0);
+		}
+		await card(host, 0).click();
+		await expect(card(replacement, 0)).toHaveAttribute("aria-pressed", "true");
+	} finally {
+		await Promise.all(guests.map(context => context.close()));
 	}
 });

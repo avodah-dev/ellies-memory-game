@@ -1,7 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	EmailAuthProvider,
+	linkWithCredential,
+	signInWithEmailAndPassword,
+} from "firebase/auth";
 import { deleteApp } from "firebase/app";
 import {
 	doc,
+	disableNetwork,
+	enableNetwork,
 	getDocFromServer,
 	onSnapshot,
 	setDoc,
@@ -28,17 +35,23 @@ import {
 	checkAndFinishGame,
 	endTurn,
 } from "../../src/services/game/GameEngine";
+import { PresenceService } from "../../src/services/sync/PresenceService";
 import { serializeGame } from "../../src/services/sync/stateProtocol";
 import type { GameState, OnlineGameState } from "../../src/types";
 import ports from "../../local-ports.json";
 
 const clients: FirebaseServices[] = [];
 const adapters: FirestoreSyncAdapter[] = [];
-async function client(observer?: SyncObserver) {
+async function client(
+	observer?: SyncObserver,
+	account?: { email: string; password: string },
+) {
 	const c = createFirebaseServices("emulator", crypto.randomUUID());
 	clients.push(c);
 	const a = new FirestoreSyncAdapter(c, observer);
 	adapters.push(a);
+	if (account)
+		await signInWithEmailAndPassword(c.auth, account.email, account.password);
 	await a.connect();
 	return { c, a, uid: a.getOdahId()! };
 }
@@ -106,7 +119,10 @@ beforeEach(async () => {
 	);
 });
 afterEach(async () => {
-	for (const c of clients) goOnline(c.rtdb);
+	for (const c of clients) {
+		goOnline(c.rtdb);
+		await enableNetwork(c.db);
+	}
 	await Promise.all(adapters.splice(0).map((a) => a.disconnect()));
 	await Promise.all(
 		clients.splice(0).map(async (c) => {
@@ -148,6 +164,7 @@ describe("real Firebase adapters and checked-in rules", () => {
 		};
 		const { host, guest, code } = await room({
 			...noopSyncObserver,
+			batchEnd: fail,
 			txPhase: fail,
 			txEnd: fail,
 			snapshotRaw: fail,
@@ -170,7 +187,9 @@ describe("real Firebase adapters and checked-in rules", () => {
 			};
 			await host.a.setState(next);
 			await eventually(async () => received.some((s) => s.syncVersion === 2));
-			await expect(host.a.setState(next)).rejects.toThrow("Game changed");
+			await expect(host.a.setState(next)).rejects.toMatchObject({
+				code: "permission-denied",
+			});
 			expect(errors).toEqual([]);
 		} finally {
 			stop();
@@ -190,6 +209,57 @@ describe("real Firebase adapters and checked-in rules", () => {
 		expect(Object.keys((await host.a.getRoom(code))!.playerSlots)).toHaveLength(
 			2,
 		);
+	});
+	it("detaches the guest game listener before membership revocation while presence cleanup is pending", async () => {
+		const phases: string[] = [],
+			errors: Error[] = [];
+		const { host, guest, code } = await room({
+			...noopSyncObserver,
+			listener: (_room, phase) => phases.push(phase),
+		});
+		await host.a.startGame(code, initial());
+		let received = 0;
+		const stop = guest.a.subscribeToState(
+			() => {
+				received++;
+			},
+			(error) => errors.push(error),
+		);
+		await eventually(async () => received > 0);
+		const originalStop = PresenceService.prototype.stop;
+		let finishPresence!: () => void, enteredPresence!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			finishPresence = resolve;
+		});
+		const entered = new Promise<void>((resolve) => {
+			enteredPresence = resolve;
+		});
+		const spy = vi
+			.spyOn(PresenceService.prototype, "stop")
+			.mockImplementationOnce(async function (this: PresenceService) {
+				enteredPresence();
+				await gate;
+				await originalStop.call(this);
+			});
+		const leaving = guest.a.leaveRoom();
+		try {
+			await entered;
+			expect(
+				(await host.a.getRoom(code))!.playerSlots[guest.uid],
+			).toBeUndefined();
+			expect(phases).toEqual(["subscribe", "unsubscribe"]);
+			expect(errors).toEqual([]);
+			await expect(
+				getDocFromServer(doc(guest.c.db, "games", code)),
+			).rejects.toMatchObject({ code: "permission-denied" });
+		} finally {
+			finishPresence();
+			await leaving;
+			stop();
+			spy.mockRestore();
+		}
+		expect(errors).toEqual([]);
+		expect(phases).toEqual(["subscribe", "unsubscribe"]);
 	});
 	it("deletes a departed guest slot so another guest can join", async () => {
 		const { host, guest, code } = await room();
@@ -217,9 +287,13 @@ describe("real Firebase adapters and checked-in rules", () => {
 			syncVersion: 2,
 			lastUpdatedBy: 1,
 		};
-		await expect(guest.a.setState(next)).rejects.toThrow("not your turn");
+		await expect(guest.a.setState(next)).rejects.toMatchObject({
+			code: "permission-denied",
+		});
 		await host.a.setState(next);
-		await expect(host.a.setState(next)).rejects.toThrow("Game changed");
+		await expect(host.a.setState(next)).rejects.toMatchObject({
+			code: "permission-denied",
+		});
 		const outsider = await client();
 		await expect(
 			getDocFromServer(doc(outsider.c.db, "games", code)),
@@ -409,5 +483,153 @@ describe("real Firebase adapters and checked-in rules", () => {
 				timestamp: Date.now(),
 			}),
 		).rejects.toThrow();
+	});
+});
+
+const proposal = (
+	current: OnlineGameState,
+	next: GameState,
+): OnlineGameState => ({
+	...next,
+	gameRound: current.gameRound,
+	syncVersion: current.syncVersion + 1,
+	lastUpdatedBy: current.currentPlayer,
+});
+describe("optimistic atomic move batches", () => {
+	it("pipelines flips, match resolution and the next flip without awaiting acknowledgements", async () => {
+		const { host, guest, code } = await room();
+		const start = await host.a.startGame(code, initial());
+		const one = proposal(start, flipCard(start, "card-0"));
+		const two = proposal(one, flipCard(one, "card-1"));
+		const match = proposal(two, applyMatch(two, checkMatch(two)!));
+		const third = proposal(match, flipCard(match, "card-2"));
+		const results = await Promise.all(
+			[one, two, match, third].map((s) => host.a.setState(s)),
+		);
+		expect(results).toHaveLength(4);
+		expect(await guest.a.getState()).toEqual(third);
+		expect((await host.a.getRoom(code))!.lastActivity).toBeDefined();
+	});
+	it("keeps game and activity atomic when a stale or forged move is rejected", async () => {
+		const { host, guest, code } = await room();
+		const start = await host.a.startGame(code, initial());
+		const activity = (
+			await getDocFromServer(doc(host.c.db, "rooms", code))
+		).get("lastActivity");
+		const move = proposal(start, flipCard(start, "card-0"));
+		await expect(guest.a.setState(move)).rejects.toMatchObject({
+			code: "permission-denied",
+		});
+		await expect(
+			host.a.setState({
+				...move,
+				syncVersion: move.syncVersion + 1,
+			} as OnlineGameState),
+		).rejects.toMatchObject({ code: "permission-denied" });
+		expect(await guest.a.getState()).toEqual(start);
+		expect(
+			(await getDocFromServer(doc(host.c.db, "rooms", code))).get(
+				"lastActivity",
+			),
+		).toEqual(activity);
+		await host.a.setState(move);
+		const nextActivity = (
+			await getDocFromServer(doc(host.c.db, "rooms", code))
+		).get("lastActivity");
+		expect(nextActivity.toMillis()).toBeGreaterThan(activity.toMillis());
+	});
+	it("lets a legal offline submission commit after reconnect", async () => {
+		const { host, guest, code } = await room();
+		const start = await host.a.startGame(code, initial());
+		await disableNetwork(host.c.db);
+		const one = proposal(start, flipCard(start, "card-0")),
+			two = proposal(one, flipCard(one, "card-1"));
+		let settled = false;
+		const pending = Promise.all([
+			host.a.setState(one),
+			host.a.setState(two),
+		]).then(() => {
+			settled = true;
+		});
+		expect(await guest.a.getState()).toEqual(start);
+		expect(settled).toBe(false);
+		await enableNetwork(host.c.db);
+		await pending;
+		expect(await guest.a.getState()).toEqual(two);
+	});
+	it("rejects stale offline proposals from a second tab sharing the same user without replay", async () => {
+		const { host, guest, code } = await room();
+		const start = await host.a.startGame(code, initial());
+		const account = {
+			email: crypto.randomUUID() + "@example.test",
+			password: "emulator-only-password",
+		};
+		await linkWithCredential(
+			host.c.auth.currentUser!,
+			EmailAuthProvider.credential(account.email, account.password),
+		);
+		const other = await client(undefined, account);
+		expect(other.uid).toBe(host.uid);
+		await other.a.joinRoom(code, {
+			odahId: other.uid,
+			name: "Host tab",
+			color: "red",
+		});
+		await disableNetwork(host.c.db);
+		const one = proposal(start, flipCard(start, "card-0")),
+			two = proposal(one, flipCard(one, "card-1"));
+		const pending = Promise.allSettled([
+			host.a.setState(one),
+			host.a.setState(two),
+		]);
+		const winner = proposal(start, flipCard(start, "card-2"));
+		await other.a.setState(winner);
+		await enableNetwork(host.c.db);
+		const results = await pending;
+		expect(results).toEqual([
+			expect.objectContaining({
+				status: "rejected",
+				reason: expect.objectContaining({ code: "permission-denied" }),
+			}),
+			expect.objectContaining({
+				status: "rejected",
+				reason: expect.objectContaining({ code: "permission-denied" }),
+			}),
+		]);
+		expect(await guest.a.getState()).toEqual(winner);
+	});
+	it("settles pending moves before replacing the round transactionally", async () => {
+		const { host, guest, code } = await room();
+		const start = await host.a.startGame(code, initial());
+		await disableNetwork(host.c.db);
+		const pending = host.a.setState(proposal(start, flipCard(start, "card-0")));
+		let replaySettled = false;
+		const replay = host.a.startGame(code, initial()).then((state) => {
+			replaySettled = true;
+			return state;
+		});
+		expect(await guest.a.getState()).toEqual(start);
+		expect(replaySettled).toBe(false);
+		await enableNetwork(host.c.db);
+		await pending;
+		expect(await replay).toMatchObject({ gameRound: 2, syncVersion: 1 });
+		expect(await guest.a.getState()).toMatchObject({
+			gameRound: 2,
+			syncVersion: 1,
+		});
+	});
+	it("cannot create a game through an ordinary move", async () => {
+		const { host, code } = await room();
+		await expect(
+			host.a.setState({
+				...initial(),
+				gameRound: 1,
+				syncVersion: 1,
+				lastUpdatedBy: 1,
+			} as OnlineGameState),
+		).rejects.toMatchObject({ code: "permission-denied" });
+		expect(
+			(await getDocFromServer(doc(host.c.db, "games", code))).exists(),
+		).toBe(false);
 	});
 });

@@ -13,6 +13,7 @@ import {
 	serverTimestamp,
 	updateDoc,
 	deleteField,
+	writeBatch,
 } from "firebase/firestore";
 import services from "../../lib/firebase";
 import type { FirebaseServices } from "../../lib/firebaseClient";
@@ -25,7 +26,6 @@ import {
 } from "./ISyncAdapter";
 import { PresenceService } from "./PresenceService";
 import {
-	assertNextRevision,
 	parseOnlineState,
 	parseStoredOnlineState,
 	parseRoom,
@@ -40,6 +40,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	private isHost = false;
 	private presenceService: PresenceService | null = null;
 	private subscriptions = new Set<() => void>();
+	private pendingMoves = new Set<Promise<void>>();
 	private services: FirebaseServices;
 	private observer: ReturnType<typeof isolateSyncObserver>;
 	constructor(
@@ -83,7 +84,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		return this.odahId;
 	}
 	private listen(stop: () => void) {
+		let active = true;
 		const dispose = () => {
+			if (!active) return;
+			active = false;
 			stop();
 			this.subscriptions.delete(dispose);
 		};
@@ -173,6 +177,9 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	}
 	async leaveRoom() {
 		if (!this.roomCode || !this.odahId) return;
+		// A guest's membership write revokes game-read permission. Detach before
+		// submitting it, rather than leaving the listener alive during cleanup.
+		for (const stop of this.subscriptions) stop();
 		await updateDoc(
 			doc(this.services.db, "rooms", this.roomCode),
 			this.isHost
@@ -184,7 +191,6 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		);
 		await this.presenceService?.stop();
 		this.presenceService = null;
-		for (const stop of this.subscriptions) stop();
 		this.roomCode = null;
 		this.isHost = false;
 	}
@@ -195,17 +201,23 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		return snap.exists() ? parseRoom(snap.data()) : null;
 	}
 	subscribeToRoom(code: string, callback: (room: Room | null) => void) {
-		return this.listen(
-			onSnapshot(
-				doc(this.services.db, "rooms", code),
-				(snapshot) =>
-					callback(snapshot.exists() ? parseRoom(snapshot.data()) : null),
-				(error) => {
-					console.error("Room subscription failed", error);
-					callback(null);
-				},
-			),
+		let active = true;
+		const stop = onSnapshot(
+			doc(this.services.db, "rooms", code),
+			(snapshot) => {
+				if (active)
+					callback(snapshot.exists() ? parseRoom(snapshot.data()) : null);
+			},
+			(error) => {
+				if (!active) return;
+				console.error("Room subscription failed", error);
+				callback(null);
+			},
 		);
+		return this.listen(() => {
+			active = false;
+			stop();
+		});
 	}
 	async updateRoomConfig(code: string, config: Partial<RoomConfig>) {
 		if (!this.isHost) throw new Error("Only host can update room config");
@@ -230,6 +242,9 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	}
 	async startGame(code: string, state: GameState) {
 		if (!this.isHost) throw new Error("Only host can start game");
+		// Round replacement is a lifecycle boundary. Already-submitted writes
+		// cannot be cancelled; settle them before the transaction reads the round.
+		await Promise.allSettled([...this.pendingMoves]);
 		return runTransaction(this.services.db, async (tx) => {
 			const game = doc(this.services.db, "games", code),
 				room = doc(this.services.db, "rooms", code);
@@ -262,37 +277,27 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	}
 	async setState(state: GameState) {
 		if (!this.roomCode) throw new SyncError("disconnected", "Not in a room");
+		this.requireUser();
 		const code = this.roomCode,
 			next = parseOnlineState(state);
-		const trace = this.observer.txStart(next, code);
+		const trace = this.observer.batchStart(next, code);
+		const batch = writeBatch(this.services.db);
+		// Update-only: ordinary moves cannot create a game. The unchanged rules
+		// validate membership, turn, immutable deck, next revision and transition.
+		batch.update(doc(this.services.db, "games", code), serializeGame(next));
+		batch.update(doc(this.services.db, "rooms", code), {
+			lastActivity: serverTimestamp(),
+		});
+		const pending = batch.commit();
+		this.pendingMoves.add(pending);
 		try {
-			await runTransaction(this.services.db, async (tx) => {
-				this.observer.txPhase(trace, "attempt");
-				const reference = doc(this.services.db, "games", code),
-					roomRef = doc(this.services.db, "rooms", code);
-				const snapshot = await tx.get(reference);
-				this.observer.txPhase(trace, "get-game");
-				const roomSnap = await tx.get(roomRef);
-				this.observer.txPhase(trace, "get-room");
-				if (!snapshot.exists())
-					throw new SyncError("conflict", "Game no longer exists");
-				const current = parseStoredOnlineState(snapshot.data()),
-					room = parseRoom(roomSnap.data());
-				assertNextRevision(current, next);
-				if (
-					room.status !== "playing" ||
-					room.playerSlots[this.requireUser()] !== current.currentPlayer ||
-					next.lastUpdatedBy !== current.currentPlayer
-				)
-					throw new SyncError("conflict", "It is not your turn");
-				tx.set(reference, serializeGame(next));
-				tx.update(roomRef, { lastActivity: serverTimestamp() });
-				this.observer.txPhase(trace, "commit");
-			});
-			this.observer.txEnd(trace);
+			await pending;
+			this.observer.batchEnd(trace);
 		} catch (error) {
-			this.observer.txEnd(trace, error);
+			this.observer.batchEnd(trace, error);
 			throw error;
+		} finally {
+			this.pendingMoves.delete(pending);
 		}
 	}
 	subscribeToState(
@@ -302,8 +307,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		if (!this.roomCode) throw new SyncError("disconnected", "Not in a room");
 		const code = this.roomCode;
 		const listenerId = nextId();
+		let active = true;
 		this.observer.listener(code, "subscribe", listenerId);
 		const fail = (error: Error) => {
+			if (!active) return;
 			this.observer.listener(code, "error", listenerId, error);
 			onError(error);
 		};
@@ -311,6 +318,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			doc(this.services.db, "games", this.roomCode),
 			{ includeMetadataChanges: true },
 			(snapshot) => {
+				if (!active) return;
 				this.observer.snapshotRaw(code, snapshot);
 				// Only confirmed server snapshots may replace optimistic state.
 				if (
@@ -328,6 +336,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			fail,
 		);
 		return this.listen(() => {
+			active = false;
 			this.observer.listener(code, "unsubscribe", listenerId);
 			stop();
 		});

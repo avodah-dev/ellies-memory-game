@@ -117,15 +117,16 @@ No names, colors, image URLs, full decks, cursor coordinates, exception messages
 | `mm.nav.results_timer` | Same timer fields, plus navigation-resolved/navigation-rejected. Observes the existing 1200 ms effect, with unchanged dependencies. |
 | `mm.nav.route` | Resolved pathname. Results timer fire is distinct from navigation completion and actual `/game-over` route resolution. |
 | `mm.sync.write.skipped` | local/no-adapter/paused and caller `context`. |
-| `mm.sync.write.enqueued`, `.dequeued`, `.dropped` | `write_id`, captured input ID, `context`, epoch and round/revision. `queue_depth` counts waiting writes (decremented at dequeue/drop); dequeued adds `ms_queue_wait`. Drops use reason epoch or pause, and retain both `paused` and `current_epoch` when both conditions are true. |
-| `mm.sync.write.start`, `.result` | `transaction_id`, `write_id`, `ok`, `error_code`, `attempts`, `ms_get_game`, `ms_get_room`, `ms_commit`, `ms_tx_total`, `ms_input_to_commit`. Input latency is null for writes without a synchronous activation origin. Read totals sum completed read phases across attempts; commit time is the final attempt's commit tail, and total includes retries/backoff. These are client-observed durations, not server processing times or a fixed RTT count. |
-| `mm.sync.tx.phase` | attempt/get-game/get-room/commit with transaction ID, attempt number and elapsed phase time. No additional reads, parallelization or transaction retries are introduced. |
+| `mm.sync.write.enqueued`, `.dequeued`, `.dropped` (historical queue events) | `write_id`, captured input ID, `context`, epoch and round/revision. `queue_depth` counts waiting writes (decremented at dequeue/drop); dequeued adds `ms_queue_wait`. Drops use reason epoch or pause, and retain both `paused` and `current_epoch` when both conditions are true. With optimistic batches, enqueue/dequeue occur synchronously in the same input task for timing continuity; there is no application queue or epoch-drop path. `ms_queue_wait` is submission bookkeeping, not a server-acknowledgement wait. |
+| `mm.sync.write.start`, `.result` | Common: `write_id`, `ok`, `error_code`, `ms_commit`, `ms_input_to_commit`. New moves use `write_mode=batch`: commit measures submission to the atomic batch promise settling. No transaction/read/attempt fields are manufactured. Historical transaction events have `transaction_id`, `attempts`, `ms_get_game`, `ms_get_room`, `ms_tx_total`; read totals sum completed phases, commit is the final attempt's tail. Input latency is null without a synchronous activation origin. These are client-observed durations, not server processing times or a fixed RTT count. |
+| `mm.sync.write.inflight` | Submitted/committed/rejected phase, write ID, captured revision and number of outstanding writes in this room/round session. Multiple submissions can precede any acknowledgement. |
+| `mm.sync.tx.phase` | attempt/get-game/get-room/commit with transaction ID, attempt number and elapsed phase time. Historical gameplay transaction trace. Optimistic move batches do not emit transaction phases. |
 | `mm.sync.snapshot.raw` | Emitted before the adapter filter: exists, pending_writes, from_cache, round/revision, last_updated_by, decision missing/pending-write/cache/candidate. Candidate means eligible for parsing, not accepted by the hook. |
-| `mm.sync.snapshot.gate` | stale-round/self-echo/not-newer/accepted, incoming round/revision, local_round/local_version. |
+| `mm.sync.snapshot.gate` | stale-round/self-echo/not-newer/accepted/conflict/recovering, incoming round/revision, local_round/local_version. |
 | `mm.sync.listener` | layer adapter/hook, listener ID, subscribe/unsubscribe/error, error code. Adapter cleanup on disconnect is included. |
-| `mm.sync.pause`, `.resume`, `.epoch`, `.resync` | Pause/resume/epoch reasons, `ms_paused`, resync start/stale/resolved/rejected/listener-error/manual-reconnect. Inspect adjacent error and connection events to identify the pause trigger. |
+| `mm.sync.pause`, `.resume`, `.epoch`, `.resync` | Pause/resume/epoch reasons, `ms_paused`, resync start/read/stale/resolved/rejected/listener-error/manual-reconnect; start/read carry outstanding write count. Recovery holds incoming snapshots without unpausing until all submitted writes settle and one server read completes. Inspect adjacent error and connection events to identify the pause trigger. |
 | `mm.sync.call` | Promise-returning adapter method, call ID, start/resolved/rejected/threw, elapsed time and error code. Original promise identity and method receiver are preserved. |
-| `mm.room.create/join/start/leave/reset` | Room-operation call timing; room code where available, no room payload. `start` includes startup transaction latency through the adapter call. Detailed transaction phases currently cover gameplay `setState` writes. |
+| `mm.room.create/join/start/leave/reset` | Room-operation call timing; room code where available, no room payload. `start` includes startup transaction latency through the adapter call. Start/replay remain transactions; ordinary `setState` moves are atomic batches. |
 | `mm.state.applied` | apply ID, source remote/controller and state revision. Controller assignment can follow remote acceptance; use the paint's apply ID for its measured start point. Optimistic local state can precede assignment of the queued revision. |
 | `mm.render.painted` | after-frame-task/cancelled-before-task, apply ID, `ms_apply_to_paint`, `ms_layout_to_task`, render/publish totals and the rendered card array's revision. A layout effect → rAF → MessageChannel task estimates paint opportunity; browsers do not guarantee physical display completion. It excludes CSS-animation completion. |
 | `mm.perf.frames` | Five-second visible-game windows: samples, ms_max, ms_window, interval buckets le_17/le_34/le_50/le_100/gt_100, and window deltas for card/board/app render attempts, model publications, cursor_rx callbacks and cursor_tx updatePosition calls. Cursor TX counts calls before the existing service throttle, not successful network writes. |
@@ -254,10 +255,11 @@ WHERE timestamp > now() - INTERVAL 7 DAY
 ORDER BY properties.device_id, properties.page_session_id, toInt(properties.seq)
 ```
 
-Write latency and retries:
+Write latency by transport. Historical rows without `write_mode` are transaction-era data. Batches have no attempt count; `max_attempts` is null for those groups. For a flip-only comparison add `AND properties.context LIKE 'flip:%'`; match-then-third-press can otherwise attach the same activation to two legal writes:
 
 ```sql
 SELECT properties.device_label AS device,
+       coalesce(properties.write_mode, 'transaction') AS write_mode,
        count() AS samples,
        quantile(0.5)(toFloat(properties.ms_input_to_commit)) AS median_input_to_commit_ms,
        quantile(0.95)(toFloat(properties.ms_input_to_commit)) AS p95_input_to_commit_ms,
@@ -266,7 +268,7 @@ FROM events
 WHERE timestamp > now() - INTERVAL 7 DAY
   AND event = 'mm.sync.write.result' AND properties.room_code = 'ROOM'
   AND properties.ok = true AND properties.ms_input_to_commit IS NOT NULL
-GROUP BY device
+GROUP BY device, write_mode
 ```
 
 Join a write result to remote acceptance on room, game_round and sync_version, with **different device IDs**, and require `clock_reference='fly-monotonic'` on both rows. Join remote acceptance to `mm.state.applied` and `mm.render.painted` on the receiving device/page session and revision, using the paint's apply ID to disambiguate reapplications. Use `ms_apply_to_paint` directly for that same-device duration. Exclude `phase='cancelled-before-task'` from latency aggregates but count those cancellations when investigating skipped states. Compare the complete tuple, not sync_version alone: replay resets revision numbers.
@@ -381,11 +383,11 @@ FROM delivery
 GROUP BY writer, receiver, receiver_session
 ```
 
-This query uses the earliest accepted/painted occurrence of a revision per receiving page session. For repeated resynchronizations, use the detailed `apply_id` records instead. `committed_at` is the writer's transaction-promise completion observation; a peer may receive the commit before that promise resolves. Negative commit-to-accept estimates therefore need not be clock error. These samples do not measure Firestore server processing time, and sample absence can mean filtering or a cancelled paint rather than missing delivery. Use the raw snapshot and cancellation events to audit excluded revisions.
+This query uses the earliest accepted/painted occurrence of a revision per receiving page session. For repeated resynchronizations, use the detailed `apply_id` records instead. `committed_at` is the writer's write-promise completion observation; a peer may receive the commit before that promise resolves. Negative commit-to-accept estimates therefore need not be clock error. These samples do not measure Firestore server processing time, and sample absence can mean filtering or a cancelled paint rather than missing delivery. Use the raw snapshot and cancellation events to audit excluded revisions.
 
 ### Interpreting directional differences
 
-Do not assume symmetric delivery merely because both browser sessions run on one Mac. They have separate Firebase connections, request histories, callbacks and accepted-revision samples. The measured cross-device difference combines peer snapshot arrival, writer transaction-promise acknowledgement timing, scheduling and calibration error. The writer observation is not the server's commit timestamp.
+Do not assume symmetric delivery merely because both browser sessions run on one Mac. They have separate Firebase connections, request histories, callbacks and accepted-revision samples. The measured cross-device difference combines peer snapshot arrival, writer write-promise acknowledgement timing, scheduling and calibration error. The writer observation is not the server's commit timestamp.
 
 Averaging the two directional medians can cancel a constant relative clock bias. What remains is an average of the two underlying observation-delay medians, not an identified one-way network latency. Interpreting that midpoint as a common delivery delay, and the half-difference as clock error, additionally requires symmetric observation delays and comparable samples with stable calibration. These are not paired NTP exchanges. Report the **directional midpoint** alongside both directions and sample counts if useful; do not label it true delivery. The half-difference also includes genuine directional differences and sampling variation, so it is not an uncertainty bound or an identified per-device clock error.
 
@@ -581,3 +583,19 @@ The app checks its own uncached `/healthz` at visible boot, visibility/pageshow 
 Reload is always explicit and uses the existing confirmation/cache cleanup flow. It rechecks the served revision before navigation. A sessionStorage receipt (one entry, validated hashes, one-hour expiry) is consumed on the next boot and reports target-loaded, previous-build-loaded or different-build-loaded by comparing the actual compiled revision. It never infers success from the click. Storage being unavailable does not prevent an explicitly requested reload, but its receipt cannot be verified. Old bundles cannot gain the detector until reloaded once. Nothing automatically reloads an active game.
 
 Local browser tests change only loopback health responses and fire real lifecycle events; their reload deliberately reports previous-build-loaded because the served bundle itself did not change. A real preview revision-change rehearsal with an already-open detector-equipped client is still required before deployment readiness; the current preview must remain unchanged until Nathan completes the rapid-tap test.
+
+## Optimistic move validation and recovery
+
+Ordinary flips, match awards and turn handoffs apply locally and immediately submit one atomic batch updating the game plus room `lastActivity`. They perform no client reads and do not await a preceding acknowledgement. Firestore rules still enforce membership, the current turn, immutable deck, exactly-next revision and legal transition; no rule changes are part of this release. Start/replay remain transactions and settle already-submitted moves before replacing the round.
+
+Each outstanding proposal retains its canonical state. Matching older acknowledgements confirm it without replacing the newer optimistic board. A same-revision snapshot with a different payload is a conflict even when both tabs share a UID and player slot. The first rejection/conflict pauses input and cancels pending match resolution. All already-submitted operations remain observed; after they settle, one server read restores confirmed state. Snapshots received during this recovery cannot resume input early. Rejected intents are never replayed. A failed read stays paused for explicit retry or connection recovery. Room/round/adapter/auth changes invalidate old callbacks separately from animation cancellation.
+
+An offline-submitted move may commit after reconnect if still legal. There is no transaction fallback or timeout pretending to cancel it. Recovery deliberately waits for outstanding writes: a later write can still be legal if another writer filled a missing revision. A newer confirmed snapshot received during the read wins over an older read response.
+
+Compare EUSG to this release using the same write-result and bounded remote-paint joins, but label EUSG's click origin versus this release's pointerdown activation. The input down-to-click improvement belongs to Fix 1, not the batch-write change. For an isolated Fix 2 comparison, use the same preview driver/devices on the immediately preceding build and this build, report sample/exclusion counts and timestamp bounds, and keep cursor/render changes out of the comparison.
+
+## Cursor render isolation measurement
+
+`cursor_rx` still counts each live RTDB receive callback. The subscription now belongs to the leaf `OpponentCursor` overlay, so moving the opponent cursor alone should produce no app renders, model publications, board renders or card renders. Other state changes (moves, presence, settings, resize, navigation) can legitimately render those components; keep them out of a cursor-only interval. Cursor broadcasting, throttling, coordinate conversion and visual interpolation are unchanged. Identity changes remount the overlay with no old position; cleanup ignores callbacks from the departed subscription.
+
+For the paired check, keep the same 40-card board, Chromium mouse host and WebKit guest, move the host pointer within the board for 11 seconds without clicking, then inspect complete five-second `mm.perf.frames` windows wholly inside that interval on the guest. Require actual `cursor_rx` traffic and a visibly moving cursor; compare render counts per received update and the frame histogram. Check clear-on-leave and an ordinary flip afterwards. The browser regression covers the real loopback RTDB path on Chromium and WebKit, asserting all four unrelated render/publication counters remain zero. This isolates cursor amplification; it is not another network/write-path change or proof about the still-open physical iPad rapid-tap complaint.
