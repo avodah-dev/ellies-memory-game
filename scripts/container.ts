@@ -4,6 +4,12 @@ import { fileURLToPath } from "node:url";
 import { parseRuntimeConfig } from "../shared/runtimeConfig";
 const image = "matchimus-verify:local";
 const name = `matchimus-verify-${process.pid}`;
+// CI builds once and tests the loaded image in each browser lane, so the
+// image saved for release is exactly the one every lane verified.
+const modes = ["all", "build", "test"] as const;
+const mode = process.argv[2] as (typeof modes)[number];
+if (!modes.includes(mode))
+	throw new Error("Usage: bun scripts/container.ts all|build|test");
 function run(command: string, args: string[], env = process.env) {
 	return new Promise<void>((resolve, reject) => {
 		const child = spawn(command, args, { stdio: "inherit", env });
@@ -40,18 +46,22 @@ try {
 	const commit = execFileSync("git", ["rev-parse", "HEAD"], {
 		encoding: "utf8",
 	}).trim();
-	await run("docker", [
-		"buildx",
-		"build",
-		"--load",
-		"--platform",
-		"linux/amd64",
-		"--build-arg",
-		`BUILD_COMMIT_SHA=${commit}`,
-		"--tag",
-		image,
-		".",
-	]);
+	if (mode !== "test")
+		await run("docker", [
+			"buildx",
+			"build",
+			"--load",
+			"--platform",
+			"linux/amd64",
+			"--build-arg",
+			`BUILD_COMMIT_SHA=${commit}`,
+			"--tag",
+			image,
+			".",
+		]);
+	if (mode === "build") process.exit(0);
+	// Fails before any server starts when the tested image was not loaded.
+	execFileSync("docker", ["image", "inspect", image], { stdio: "ignore" });
 	await run("docker", [
 		"run",
 		"--rm",

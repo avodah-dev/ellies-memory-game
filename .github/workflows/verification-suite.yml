@@ -60,8 +60,14 @@ jobs:
   vite:
     needs: source
     if: needs.source.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 12
+    env:
+      E2E_BROWSER: ${{ matrix.browser }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -75,17 +81,18 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: verification-vite
+          name: verification-vite-${{ matrix.browser }}
           path: |
             playwright-report/
             test-results/
             *-debug.log
           retention-days: 7
-  container:
+  image:
+    # Build the release candidate once; every container lane tests this exact image.
     needs: source
     if: needs.source.outputs.docs_only != 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 12
+    timeout-minutes: 8
     steps:
       - run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/candidate-image" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -95,21 +102,47 @@ jobs:
       - uses: ./.github/actions/verification-setup
         with:
           full: 'true'
-      - run: bun scripts/local.ts container
-      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: node scripts/ci/artifacts.mjs save
+          browsers: 'false'
+      - run: bun run build:container
+      - run: node scripts/ci/artifacts.mjs save
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           name: candidate-image-${{ needs.source.outputs.tree }}
           path: ${{ env.VERIFIED_IMAGE_DIR }}/
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
+  container:
+    needs: [source, image]
+    if: needs.source.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 12
+    env:
+      E2E_BROWSER: ${{ matrix.browser }}
+    steps:
+      - run: echo "VERIFIED_IMAGE_DIR=$RUNNER_TEMP/candidate-image" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/verification-setup
+        with:
+          full: 'true'
+          docker: 'false'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: candidate-image-${{ needs.source.outputs.tree }}
+          path: ${{ env.VERIFIED_IMAGE_DIR }}/
+      - run: node scripts/ci/artifacts.mjs load
+      - run: bun scripts/local.ts container-image
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: verification-container
+          name: verification-container-${{ matrix.browser }}
           path: |
             playwright-report/
             test-results/

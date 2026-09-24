@@ -31,7 +31,9 @@
 		"start": "bun server/index.ts",
 		"test:server": "vitest run --config vitest.server.config.ts",
 		"test:ingest-runtime": "bun scripts/test-ingest-runtime.ts",
-		"test:container": "bun scripts/container.ts",
+		"test:container": "bun scripts/container.ts all",
+		"build:container": "bun scripts/container.ts build",
+		"test:container:image": "bun scripts/container.ts test",
 		"verify:release": "bun scripts/local.ts release"
 	},
 	"dependencies": {
