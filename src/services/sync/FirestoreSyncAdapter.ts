@@ -139,7 +139,21 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			if (!created) continue;
 			this.roomCode = code;
 			this.isHost = true;
-			await this.presence(code, options.hostName, options.hostColor, 1);
+			try {
+				await this.presence(code, options.hostName, options.hostColor, 1);
+			} catch (error) {
+				// Nobody can play in a room whose host never came online. Close it
+				// rather than leaving this adapter attached to it.
+				this.roomCode = null;
+				this.isHost = false;
+				void updateDoc(reference, {
+					status: "finished",
+					lastActivity: serverTimestamp(),
+				}).catch((closeError) =>
+					console.error("Failed to close an abandoned room", closeError),
+				);
+				throw error;
+			}
 			return code;
 		}
 		throw new Error("Failed to generate unique room code");
@@ -175,24 +189,36 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		);
 		return room;
 	}
-	async leaveRoom() {
-		if (!this.roomCode || !this.odahId) return;
+	/**
+	 * Detaches from the room synchronously, then submits the membership write and
+	 * presence cleanup. The returned promise settles only when the server
+	 * acknowledges them, which never happens while offline; callers that must not
+	 * block on the network should not await it.
+	 */
+	leaveRoom() {
+		const code = this.roomCode,
+			uid = this.odahId,
+			wasHost = this.isHost,
+			presence = this.presenceService;
+		if (!code || !uid) return Promise.resolve();
 		// A guest's membership write revokes game-read permission. Detach before
 		// submitting it, rather than leaving the listener alive during cleanup.
 		for (const stop of this.subscriptions) stop();
-		await updateDoc(
-			doc(this.services.db, "rooms", this.roomCode),
-			this.isHost
-				? { status: "finished", lastActivity: serverTimestamp() }
-				: {
-						[`playerSlots.${this.odahId}`]: deleteField(),
-						lastActivity: serverTimestamp(),
-					},
-		);
-		await this.presenceService?.stop();
-		this.presenceService = null;
 		this.roomCode = null;
 		this.isHost = false;
+		this.presenceService = null;
+		return (async () => {
+			await updateDoc(
+				doc(this.services.db, "rooms", code),
+				wasHost
+					? { status: "finished", lastActivity: serverTimestamp() }
+					: {
+							[`playerSlots.${uid}`]: deleteField(),
+							lastActivity: serverTimestamp(),
+						},
+			);
+			await presence?.stop();
+		})();
 	}
 	async getRoom(code: string) {
 		const snap = await getDocFromServer(
@@ -200,19 +226,29 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		);
 		return snap.exists() ? parseRoom(snap.data()) : null;
 	}
-	subscribeToRoom(code: string, callback: (room: Room | null) => void) {
+	subscribeToRoom(
+		code: string,
+		callback: (room: Room | null) => void,
+		onError: (error: Error) => void,
+	) {
 		let active = true;
+		const fail = (error: Error) => {
+			if (active) onError(error);
+		};
 		const stop = onSnapshot(
 			doc(this.services.db, "rooms", code),
 			(snapshot) => {
-				if (active)
-					callback(snapshot.exists() ? parseRoom(snapshot.data()) : null);
-			},
-			(error) => {
 				if (!active) return;
-				console.error("Room subscription failed", error);
-				callback(null);
+				let room: Room | null;
+				try {
+					room = snapshot.exists() ? parseRoom(snapshot.data()) : null;
+				} catch (error) {
+					fail(error as Error);
+					return;
+				}
+				callback(room);
 			},
+			fail,
 		);
 		return this.listen(() => {
 			active = false;

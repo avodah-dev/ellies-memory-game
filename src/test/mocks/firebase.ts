@@ -28,6 +28,7 @@ export interface MockFirestoreSyncAdapterState {
 	gameState: OnlineGameState | null;
 	stateCallbacks: ((state: GameState) => void)[];
 	roomCallbacks: ((room: Room | null) => void)[];
+	roomErrorCallbacks: ((error: Error) => void)[];
 }
 
 export function createMockFirestoreSyncAdapter(
@@ -42,6 +43,7 @@ export function createMockFirestoreSyncAdapter(
 		gameState: null,
 		stateCallbacks: [],
 		roomCallbacks: [],
+		roomErrorCallbacks: [],
 		...initialState,
 	};
 
@@ -64,6 +66,7 @@ export function createMockFirestoreSyncAdapter(
 			state.gameState = null;
 			state.stateCallbacks = [];
 			state.roomCallbacks = [];
+			state.roomErrorCallbacks = [];
 		}),
 
 		isConnected: vi.fn(() => state.connected),
@@ -133,7 +136,12 @@ export function createMockFirestoreSyncAdapter(
 		}),
 
 		subscribeToRoom: vi.fn(
-			(_roomCode: string, callback: (room: Room | null) => void) => {
+			(
+				_roomCode: string,
+				callback: (room: Room | null) => void,
+				onError: (error: Error) => void,
+			) => {
+				state.roomErrorCallbacks.push(onError);
 				state.roomCallbacks.push(callback);
 				// Immediately call with current room
 				if (state.room) {
@@ -143,6 +151,10 @@ export function createMockFirestoreSyncAdapter(
 					const index = state.roomCallbacks.indexOf(callback);
 					if (index > -1) {
 						state.roomCallbacks.splice(index, 1);
+					}
+					const errorIndex = state.roomErrorCallbacks.indexOf(onError);
+					if (errorIndex > -1) {
+						state.roomErrorCallbacks.splice(errorIndex, 1);
 					}
 				};
 			},
@@ -212,6 +224,10 @@ export function createMockFirestoreSyncAdapter(
 			state.roomCallbacks.forEach((cb) => cb(room));
 		},
 
+		_simulateRoomError: (error: Error) => {
+			state.roomErrorCallbacks.forEach((cb) => cb(error));
+		},
+
 		_simulateStateUpdate: (gameState: OnlineGameState) => {
 			state.gameState = gameState;
 			state.stateCallbacks.forEach((cb) => cb(gameState));
@@ -226,6 +242,7 @@ export function createMockFirestoreSyncAdapter(
 			state.gameState = null;
 			state.stateCallbacks = [];
 			state.roomCallbacks = [];
+			state.roomErrorCallbacks = [];
 			vi.clearAllMocks();
 		},
 	};

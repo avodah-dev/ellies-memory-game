@@ -40,9 +40,21 @@ const startRoomSubscription = (
 	}
 
 	const adapter = getFirestoreSyncAdapter();
-	roomUnsubscribe = adapter.subscribeToRoom(roomCode, (room) => {
-		set({ room, ...deriveRoomPresence(get(), room) });
-	});
+	roomUnsubscribe = adapter.subscribeToRoom(
+		roomCode,
+		(room) => {
+			set({ room, ...deriveRoomPresence(get(), room) });
+		},
+		(error) => {
+			// Keep the last confirmed room: a failed listener says nothing about
+			// membership, and clearing it would silently drop the player out of
+			// online mode. Surface the failure through the online error banner.
+			console.error("Room subscription failed", error);
+			set({
+				error: `Lost connection to room ${roomCode}. Leave the game and rejoin with the room code. (${error.message})`,
+			});
+		},
+	);
 };
 
 // Helper to stop room subscription
@@ -105,7 +117,11 @@ interface OnlineStoreActions {
 		playerName: string,
 		playerColor: string,
 	) => Promise<Room>;
-	leaveRoom: () => Promise<void>;
+	/**
+	 * Leaves the room locally right away. The server cleanup is submitted in
+	 * the background so an offline player is never stuck waiting for it.
+	 */
+	leaveRoom: () => void;
 
 	// Room config (host only)
 	updateRoomConfig: (config: {
@@ -369,7 +385,8 @@ export const useOnlineStore = create<OnlineStore>()(
 				set({
 					room,
 					roomCode: normalizedRoomCode,
-					isHost: false,
+					// A host who refreshed rejoins with the code and is still the host.
+					isHost: room.hostId === odahId,
 				});
 
 				// Start room subscription automatically
@@ -384,32 +401,26 @@ export const useOnlineStore = create<OnlineStore>()(
 			}
 		},
 
-		leaveRoom: async () => {
-			set({ error: null });
-
-			// Stop room subscription before leaving
+		leaveRoom: () => {
 			stopRoomSubscription();
-
-			try {
-				const adapter = getFirestoreSyncAdapter();
-				await adapter.leaveRoom();
-
-				set({
-					room: null,
-					roomCode: null,
-					isHost: false,
-					rawPresenceData: {},
-					presenceData: {},
-					opponentConnected: false,
-					opponentDisconnectedAt: null,
+			// Firestore queues the membership write while offline and only settles
+			// once the server acknowledges it. Never hold the player in the room
+			// waiting for that; a rejected write is reported, not retried.
+			getFirestoreSyncAdapter()
+				.leaveRoom()
+				.catch((error: unknown) => {
+					console.error("Failed to leave room cleanly", error);
 				});
-			} catch (error) {
-				set({
-					error:
-						error instanceof Error ? error.message : "Failed to leave room",
-				});
-				throw error;
-			}
+			set({
+				error: null,
+				room: null,
+				roomCode: null,
+				isHost: false,
+				rawPresenceData: {},
+				presenceData: {},
+				opponentConnected: false,
+				opponentDisconnectedAt: null,
+			});
 		},
 
 		// Room config (host only)

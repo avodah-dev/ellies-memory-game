@@ -48,15 +48,10 @@ export function useOnlineGame(options: UseOnlineGameOptions) {
 	}, [roomCode, localPlayerSlot]);
 
 	// Get the Firestore sync adapter
-	const syncAdapter = useMemo(() => {
-		if (!roomCode) return undefined;
-		try {
-			return getFirestoreSyncAdapter();
-		} catch {
-			console.warn("[useOnlineGame] Firestore adapter not available");
-			return undefined;
-		}
-	}, [roomCode]);
+	const syncAdapter = useMemo(
+		() => (roomCode ? getFirestoreSyncAdapter() : undefined),
+		[roomCode],
+	);
 
 	// Default settings for online mode (settings are managed by the host)
 	const initialSettings: GameSettings = useMemo(

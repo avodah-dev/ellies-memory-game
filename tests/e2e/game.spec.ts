@@ -1396,3 +1396,152 @@ test("a replacement guest can start after another guest leaves the waiting room"
 		await Promise.all(guests.map(context => context.close()));
 	}
 });
+
+async function newPlayerContext(
+	browser: import("@playwright/test").Browser,
+	applicationErrors: string[],
+) {
+	const context = await browser.newContext({
+		...test.info().project.use,
+		baseURL: test.info().project.use.baseURL,
+	});
+	watchApplicationErrors(context, applicationErrors);
+	await localRequestsOnly(context);
+	return context;
+}
+async function createOnlineRoom(host: Page, name: string, pairs?: "4 4×2 Easy") {
+	await home(host);
+	await host.getByRole("button", { name: /Play Online Challenge/ }).click();
+	await host.getByLabel("Your online name").fill(name);
+	await host.getByRole("button", { name: /create.*room/i }).click();
+	await expect(host).toHaveURL(/\/online\/waiting$/);
+	if (pairs) {
+		await host.getByRole("button", { name: /40.*cards/i }).click();
+		await host.getByRole("button", { name: pairs }).click();
+	}
+	return (await host.getByTestId("room-code").innerText()).trim();
+}
+async function joinOnlineRoom(page: Page, code: string, name?: string) {
+	await page.getByRole("button", { name: /Play Online Challenge/ }).click();
+	if (name) await page.getByLabel("Your online name").fill(name);
+	await page.getByRole("button", { name: /join.*room/i }).click();
+	await page.getByPlaceholder("ABCD").fill(code);
+	await page.getByRole("button", { name: "Join Game", exact: true }).click();
+}
+
+test("the host can rejoin after a refresh, finish the round and start a rematch", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await newPlayerContext(browser, applicationErrors);
+	try {
+		const guest = await guestContext.newPage();
+		const code = await createOnlineRoom(host, "Rejoin Host", "4 4×2 Easy");
+		await home(guest);
+		await joinOnlineRoom(guest, code, "Rejoin Guest");
+		await expect(guest).toHaveURL(/\/online\/waiting$/);
+		await host.getByRole("button", { name: "Start Game", exact: true }).click();
+		for (const page of [host, guest]) await expect(page).toHaveURL(/\/online\/game$/);
+
+		// A refresh always restarts the app at home; the host returns with the code.
+		const beforeReload = applicationErrors.length;
+		await host.reload();
+		await expect(host).toHaveURL(/\/$/);
+		// WebKit reports Firestore channel requests cut off by the unload itself.
+		// Drop only those; any other error raised around the reload still fails.
+		const unloadAbort =
+			/Firestore\/(Write|Listen)\/channel\?.* due to access control checks\.$/;
+		applicationErrors.splice(
+			beforeReload,
+			Infinity,
+			...applicationErrors
+				.slice(beforeReload)
+				.filter((message) => !unloadAbort.test(message)),
+		);
+		await joinOnlineRoom(host, code);
+		await expect(host).toHaveURL(/\/online\/game$/);
+		await expect(host.getByText("Your Turn!", { exact: true })).toBeVisible();
+
+		const count = await host.locator("main button[data-card-id]:enabled").count();
+		for (let id = 0; id < count; id += 2) await match(host, id);
+		for (const page of [host, guest]) await expect(page).toHaveURL(/\/game-over$/);
+		const playAgain = host.getByRole("button", { name: /play again/i });
+		await expect(playAgain).toBeEnabled();
+		await playAgain.click();
+		await host.getByRole("button", { name: /replay/i }).click();
+		for (const page of [host, guest]) await expect(page).toHaveURL(/\/online\/game$/);
+		await card(host, 0).click();
+		await expect(card(guest, 0)).toHaveAttribute("aria-pressed", "true");
+	} finally {
+		await guestContext.close();
+	}
+});
+
+test("leaving the waiting room offline returns to the lobby at once and frees the slot after reconnect", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await newPlayerContext(browser, applicationErrors);
+	try {
+		const code = await createOnlineRoom(host, "Offline Host");
+		const guest = await guestContext.newPage();
+		await home(guest);
+		await joinOnlineRoom(guest, code, "Offline Guest");
+		await expect(guest).toHaveURL(/\/online\/waiting$/);
+		const start = host.getByRole("button", { name: "Start Game", exact: true });
+		await expect(start).toBeEnabled();
+
+		await guestContext.setOffline(true);
+		await guest.getByRole("button", { name: "Leave Room", exact: true }).click();
+		await expect(guest).toHaveURL(/\/online$/, { timeout: 3000 });
+
+		await guestContext.setOffline(false);
+		// The queued membership write commits once the guest reconnects.
+		await expect(host.getByText("Offline Guest", { exact: true })).toHaveCount(0, {
+			timeout: 20000,
+		});
+		await expect(start).toBeDisabled();
+
+		// The guest is not stranded in the room it left.
+		await guest.getByRole("button", { name: /create.*room/i }).click();
+		await expect(guest).toHaveURL(/\/online\/waiting$/);
+		await expect(guest.getByTestId("room-code")).not.toHaveText(code);
+	} finally {
+		await guestContext.close();
+	}
+});
+
+test("a failed room creation explains the failure and can be retried", async ({
+	page,
+	context,
+}) => {
+	let blockPresence = true;
+	await context.routeWebSocket(
+		(url) => url.port === String(ports.database),
+		(socket) => {
+			if (blockPresence) socket.close();
+			else socket.connectToServer();
+		},
+	);
+	await context.route(
+		(url) => url.port === String(ports.database),
+		(route) => (blockPresence ? route.abort() : route.fallback()),
+	);
+	await home(page);
+	await page.getByRole("button", { name: /Play Online Challenge/ }).click();
+	await page.getByLabel("Your online name").fill("Unlucky Host");
+	await page.getByRole("button", { name: /create.*room/i }).click();
+	await expect(page.getByText("Creating room...")).toBeVisible();
+	const failure = page.getByRole("alert");
+	await expect(failure).toContainText("Presence connection timeout", {
+		timeout: 20000,
+	});
+	await expect(page).not.toHaveURL(/\/online\/waiting$/);
+
+	blockPresence = false;
+	await page.getByRole("button", { name: "Try Again", exact: true }).click();
+	await expect(page).toHaveURL(/\/online\/waiting$/, { timeout: 20000 });
+	await expect(page.getByTestId("room-code")).toHaveText(/^[A-Z0-9]{4}$/);
+});
