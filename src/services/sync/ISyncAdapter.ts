@@ -107,6 +107,7 @@ export interface ISyncAdapter {
 	subscribeToRoom?(
 		roomCode: string,
 		callback: (room: Room | null) => void,
+		onError: (error: Error) => void,
 	): () => void;
 
 	/**
@@ -148,6 +149,7 @@ export abstract class BaseSyncAdapter implements ISyncAdapter {
 	subscribeToRoom?(
 		_roomCode: string,
 		_callback: (room: Room | null) => void,
+		_onError: (error: Error) => void,
 	): () => void;
 	updateRoomConfig?(
 		_roomCode: string,

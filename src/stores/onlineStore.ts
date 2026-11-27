@@ -26,6 +26,9 @@ import type {
 
 // Store the unsubscribe function outside of Zustand state
 let roomUnsubscribe: (() => void) | null = null;
+// Identifies the current room-creation request. Reset and disconnect advance
+// it, so a request that finishes afterwards cannot publish its room.
+let createRequest = 0;
 
 // Helper to start room subscription
 const startRoomSubscription = (
@@ -40,9 +43,30 @@ const startRoomSubscription = (
 	}
 
 	const adapter = getFirestoreSyncAdapter();
-	roomUnsubscribe = adapter.subscribeToRoom(roomCode, (room) => {
-		set({ room, ...deriveRoomPresence(get(), room) });
-	});
+	let roomError: string | null = null;
+	roomUnsubscribe = adapter.subscribeToRoom(
+		roomCode,
+		(room) => {
+			// A valid snapshot after a malformed one means the room is readable
+			// again; withdraw only the error this listener raised.
+			const recovered = roomError !== null && get().error === roomError;
+			roomError = null;
+			set({
+				room,
+				...deriveRoomPresence(get(), room),
+				...(recovered ? { error: null } : {}),
+			});
+		},
+		(error) => {
+			// Keep the last confirmed room: a failed listener says nothing about
+			// membership, and clearing it would silently drop the player out of
+			// online mode. Leaving would give up the seat (a guest cannot rejoin a
+			// round in progress), so direct the player to refresh, which keeps it.
+			console.error("Room subscription failed", error);
+			roomError = `Lost connection to room ${roomCode}. Refresh the page and rejoin with code ${roomCode}; your seat is kept. (${error.message})`;
+			set({ error: roomError });
+		},
+	);
 };
 
 // Helper to stop room subscription
@@ -69,6 +93,8 @@ interface OnlineStoreState {
 	room: Room | null;
 	roomCode: string | null;
 	isHost: boolean;
+	// Lobby routes remount the lobby, so request state lives here, not in it.
+	isCreatingRoom: boolean;
 	playerName: string;
 
 	// Presence
@@ -105,7 +131,11 @@ interface OnlineStoreActions {
 		playerName: string,
 		playerColor: string,
 	) => Promise<Room>;
-	leaveRoom: () => Promise<void>;
+	/**
+	 * Leaves the room locally right away. The server cleanup is submitted in
+	 * the background so an offline player is never stuck waiting for it.
+	 */
+	leaveRoom: () => void;
 
 	// Room config (host only)
 	updateRoomConfig: (config: {
@@ -154,6 +184,7 @@ const initialState: OnlineStoreState = {
 	room: null,
 	roomCode: null,
 	isHost: false,
+	isCreatingRoom: false,
 	playerName: "Player",
 	rawPresenceData: {},
 	presenceData: {},
@@ -285,12 +316,14 @@ export const useOnlineStore = create<OnlineStore>()(
 				console.error("Disconnect error:", error);
 			}
 
+			createRequest++;
 			set({
 				connectionStatus: "disconnected",
 				odahId: null,
 				room: null,
 				roomCode: null,
 				isHost: false,
+				isCreatingRoom: false,
 				rawPresenceData: {},
 				presenceData: {},
 				opponentConnected: false,
@@ -300,12 +333,14 @@ export const useOnlineStore = create<OnlineStore>()(
 
 		// Room actions
 		createRoom: async (options) => {
-			const { odahId, setLastOnlinePreferences } = get();
+			const { odahId, setLastOnlinePreferences, isCreatingRoom } = get();
 			if (!odahId) {
 				throw new Error("Not connected");
 			}
+			if (isCreatingRoom) throw new Error("Already creating a room");
 
-			set({ error: null });
+			const request = ++createRequest;
+			set({ error: null, isCreatingRoom: true });
 
 			try {
 				const adapter = getFirestoreSyncAdapter();
@@ -318,6 +353,8 @@ export const useOnlineStore = create<OnlineStore>()(
 					cardBack: options.cardBack,
 					pairCount: options.pairCount,
 				});
+				if (request !== createRequest)
+					throw new Error("Room creation was canceled");
 
 				// Save preferences after creating room
 				setLastOnlinePreferences(
@@ -329,6 +366,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				set({
 					roomCode,
 					isHost: true,
+					isCreatingRoom: false,
 				});
 
 				// Start room subscription automatically
@@ -336,10 +374,13 @@ export const useOnlineStore = create<OnlineStore>()(
 
 				return roomCode;
 			} catch (error) {
-				set({
-					error:
-						error instanceof Error ? error.message : "Failed to create room",
-				});
+				// A canceled request has nothing left to report or clear.
+				if (request === createRequest)
+					set({
+						error:
+							error instanceof Error ? error.message : "Failed to create room",
+						isCreatingRoom: false,
+					});
 				throw error;
 			}
 		},
@@ -369,7 +410,8 @@ export const useOnlineStore = create<OnlineStore>()(
 				set({
 					room,
 					roomCode: normalizedRoomCode,
-					isHost: false,
+					// A host who refreshed rejoins with the code and is still the host.
+					isHost: room.hostId === odahId,
 				});
 
 				// Start room subscription automatically
@@ -384,32 +426,26 @@ export const useOnlineStore = create<OnlineStore>()(
 			}
 		},
 
-		leaveRoom: async () => {
-			set({ error: null });
-
-			// Stop room subscription before leaving
+		leaveRoom: () => {
 			stopRoomSubscription();
-
-			try {
-				const adapter = getFirestoreSyncAdapter();
-				await adapter.leaveRoom();
-
-				set({
-					room: null,
-					roomCode: null,
-					isHost: false,
-					rawPresenceData: {},
-					presenceData: {},
-					opponentConnected: false,
-					opponentDisconnectedAt: null,
+			// Firestore queues the membership write while offline and only settles
+			// once the server acknowledges it. Never hold the player in the room
+			// waiting for that; a rejected write is reported, not retried.
+			getFirestoreSyncAdapter()
+				.leaveRoom()
+				.catch((error: unknown) => {
+					console.error("Failed to leave room cleanly", error);
 				});
-			} catch (error) {
-				set({
-					error:
-						error instanceof Error ? error.message : "Failed to leave room",
-				});
-				throw error;
-			}
+			set({
+				error: null,
+				room: null,
+				roomCode: null,
+				isHost: false,
+				rawPresenceData: {},
+				presenceData: {},
+				opponentConnected: false,
+				opponentDisconnectedAt: null,
+			});
 		},
 
 		// Room config (host only)
@@ -577,6 +613,7 @@ export const useOnlineStore = create<OnlineStore>()(
 		reset: () => {
 			// Stop room subscription before resetting
 			stopRoomSubscription();
+			createRequest++;
 			resetFirestoreSyncAdapter();
 			set((state) => ({
 				...initialState,

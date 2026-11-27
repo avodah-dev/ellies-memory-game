@@ -5,7 +5,7 @@
  */
 
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { LogIn, UserPlus } from "lucide-react";
+import { LoaderCircle, LogIn, TriangleAlert, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CARD_DECKS } from "../../data/cardDecks";
 import {
@@ -57,6 +57,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 
 	const {
 		connectionStatus,
+		isCreatingRoom,
 		roomCode,
 		room,
 		isHost,
@@ -102,6 +103,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		if (
 			!isHost ||
 			!room ||
+			room.status !== "waiting" ||
 			!roomCode ||
 			startingRef.current ||
 			startedState ||
@@ -155,7 +157,9 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 
 			// Start game via adapter (syncs to Firestore)
 			const adapter = getFirestoreSyncAdapter();
-			const confirmed = await adapter.startGame(roomCode, onlineState);
+			const confirmed = await adapter.startGame(roomCode, onlineState, {
+				requireStatus: "waiting",
+			});
 			if (
 				activeLobby.current &&
 				useOnlineStore.getState().roomCode === roomCode
@@ -231,11 +235,14 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		}
 	}, [roomCode, view, currentPath, navigate]);
 
-	// Guests wait for the confirmed game document. The room notification can
-	// arrive before the game listener catches up; an immediate read can be stale.
+	// Guests, and a host who rejoined a round already in progress, wait for the
+	// confirmed game document. The room notification can arrive before the game
+	// listener catches up; an immediate read can be stale. A host starting the
+	// round from this lobby navigates from its own transaction instead.
+	const hostStartingHere = isHost && (isStarting || startedState !== null);
 	useEffect(() => {
 		if (
-			isHost ||
+			hostStartingHere ||
 			!roomCode ||
 			room?.status !== "playing" ||
 			hasStartedGame.current
@@ -256,7 +263,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 			active = false;
 			stop();
 		};
-	}, [room?.status, roomCode, isHost, onGameStart, setError]);
+	}, [room?.status, roomCode, hostStartingHere, onGameStart, setError]);
 
 	const handleCreateRoom = async () => {
 		setIsLoading(true);
@@ -294,8 +301,8 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		}
 	};
 
-	const handleLeaveRoom = async () => {
-		await leaveRoom();
+	const handleLeaveRoom = () => {
+		leaveRoom();
 		navigate({ to: "/online" });
 	};
 
@@ -305,10 +312,19 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		} else if (view === "choice") {
 			onBack();
 		} else {
-			navigate({ to: "/online" });
+			// Replace, so browser Back cannot return to a create screen with no
+			// request running.
+			navigate({ to: "/online", replace: true });
 			clearError();
 		}
 	};
+
+	// The create screen exists only while a request runs or after one failed.
+	// Reaching it any other way (browser history) has nothing to show.
+	useEffect(() => {
+		if (view === "create" && !isCreatingRoom && !error && !roomCode)
+			navigate({ to: "/online", replace: true });
+	}, [view, isCreatingRoom, error, roomCode, navigate]);
 
 	// Render based on current view
 	const renderContent = () => {
@@ -316,7 +332,10 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		if (connectionStatus === "connecting") {
 			return (
 				<div className="text-center space-y-6 py-8">
-					<div className="text-6xl animate-bounce">{"connect"}</div>
+					<LoaderCircle
+						aria-hidden="true"
+						className="mx-auto h-16 w-16 animate-spin text-blue-500"
+					/>
 					<p className="text-gray-600">Connecting to server...</p>
 				</div>
 			);
@@ -326,7 +345,10 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		if (connectionStatus === "disconnected" && error) {
 			return (
 				<div className="text-center space-y-6 py-8">
-					<div className="text-6xl">{"err"}</div>
+					<TriangleAlert
+						aria-hidden="true"
+						className="mx-auto h-16 w-16 text-red-500"
+					/>
 					<p className="text-red-600 font-medium">{error}</p>
 					<button
 						type="button"
@@ -369,7 +391,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 								maxLength={20}
 								className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
 								placeholder="Enter your name"
-								disabled={isLoading}
+								disabled={isLoading || isCreatingRoom}
 							/>
 							<p className="text-xs text-gray-500">
 								This name is shared when you create or join rooms.
@@ -380,10 +402,12 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 							<button
 								type="button"
 								onClick={() => {
+									// Start the request first, so the create screen never renders
+									// without one running.
+									void handleCreateRoom();
 									navigate({ to: "/online/create" });
-									handleCreateRoom();
 								}}
-								disabled={isLoading}
+								disabled={isLoading || isCreatingRoom}
 								className="p-8 rounded-xl border-3 border-gray-200 bg-white hover:border-blue-400 hover:shadow-lg transition-all duration-300 transform hover:scale-105 group disabled:opacity-50"
 							>
 								<div className="space-y-4">
@@ -402,7 +426,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 							<button
 								type="button"
 								onClick={() => navigate({ to: "/online/join" })}
-								disabled={isLoading}
+								disabled={isLoading || isCreatingRoom}
 								className="p-8 rounded-xl border-3 border-gray-200 bg-white hover:border-purple-400 hover:shadow-lg transition-all duration-300 transform hover:scale-105 group disabled:opacity-50"
 							>
 								<div className="space-y-4">
@@ -428,9 +452,42 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 				);
 
 			case "create":
-				return (
+				if (!isCreatingRoom && !error) return null;
+				return !isCreatingRoom ? (
 					<div className="text-center space-y-6 py-8">
-						<div className="text-6xl animate-pulse">{"..."}</div>
+						<TriangleAlert
+							aria-hidden="true"
+							className="mx-auto h-16 w-16 text-red-500"
+						/>
+						<div role="alert" className="space-y-2">
+							<p className="text-lg font-semibold text-gray-800">
+								Couldn't create the room
+							</p>
+							<p className="text-red-600">{error}</p>
+						</div>
+						<div className="flex justify-center gap-4">
+							<button
+								type="button"
+								onClick={handleCreateRoom}
+								className="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+							>
+								Try Again
+							</button>
+							<button
+								type="button"
+								onClick={handleBack}
+								className="px-6 py-3 text-gray-600 hover:text-gray-800 font-semibold"
+							>
+								Back
+							</button>
+						</div>
+					</div>
+				) : (
+					<div className="text-center space-y-6 py-8">
+						<LoaderCircle
+							aria-hidden="true"
+							className="mx-auto h-16 w-16 animate-spin text-blue-500"
+						/>
 						<p className="text-gray-600">Creating room...</p>
 					</div>
 				);
@@ -446,6 +503,31 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 				);
 
 			case "waiting":
+				// The host left, which closes the room for good.
+				if (room?.status === "finished")
+					return (
+						<div className="text-center space-y-6 py-8">
+							<TriangleAlert
+								aria-hidden="true"
+								className="mx-auto h-16 w-16 text-amber-500"
+							/>
+							<div role="alert" className="space-y-2">
+								<p className="text-lg font-semibold text-gray-800">
+									This room has closed
+								</p>
+								<p className="text-gray-600">
+									The host left. Create a new room or join another one.
+								</p>
+							</div>
+							<button
+								type="button"
+								onClick={handleLeaveRoom}
+								className="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+							>
+								Back to Online Lobby
+							</button>
+						</div>
+					);
 				return roomCode && room ? (
 					<WaitingRoom
 						roomCode={roomCode}

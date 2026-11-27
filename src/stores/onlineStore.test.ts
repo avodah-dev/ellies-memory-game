@@ -246,12 +246,211 @@ describe("onlineStore", () => {
 				pairCount: 20,
 			});
 
-			await leaveRoom();
+			leaveRoom();
 
 			const state = useOnlineStore.getState();
 			expect(state.roomCode).toBe(null);
 			expect(state.room).toBe(null);
 			expect(state.isHost).toBe(false);
+		});
+
+		it("tracks an in-flight room creation in the store", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			let release!: () => void;
+			adapter.createRoom.mockImplementationOnce(
+				() =>
+					new Promise<string>((_resolve, reject) => {
+						release = () => reject(new Error("Presence connection timeout"));
+					}),
+			);
+			const creating = useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(true);
+			release();
+			await expect(creating).rejects.toThrow("Presence connection timeout");
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(false);
+			expect(useOnlineStore.getState().error).toBe(
+				"Presence connection timeout",
+			);
+		});
+
+		it("allows only one room creation at a time", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			adapter.createRoom.mockImplementationOnce(() => new Promise(() => {}));
+			const options = {
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals" as const,
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			};
+			void useOnlineStore.getState().createRoom(options);
+			await expect(useOnlineStore.getState().createRoom(options)).rejects.toThrow(
+				"Already creating a room",
+			);
+			expect(adapter.createRoom).toHaveBeenCalledOnce();
+		});
+
+		it("ignores a room creation that finishes after a reset", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			let finish!: (code: string) => void;
+			adapter.createRoom.mockImplementationOnce(
+				() =>
+					new Promise<string>((resolve) => {
+						finish = resolve;
+					}),
+			);
+			const creating = useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			useOnlineStore.getState().reset();
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(false);
+			finish("LATE");
+			await expect(creating).rejects.toThrow("Room creation was canceled");
+			const state = useOnlineStore.getState();
+			expect(state.roomCode).toBeNull();
+			expect(state.isHost).toBe(false);
+			expect(state.error).toBeNull();
+		});
+
+		it("clears an in-flight creation on disconnect", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			adapter.createRoom.mockImplementationOnce(() => new Promise(() => {}));
+			void useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			await useOnlineStore.getState().disconnect();
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(false);
+		});
+
+		it("keeps a host who rejoins their own room as the host", async () => {
+			const { odahId } = useOnlineStore.getState();
+			const adapter = getMockFirestoreSyncAdapter();
+			adapter._state.room = createTestRoom({
+				roomCode: "HOST",
+				hostId: odahId!,
+				status: "playing",
+				playerSlots: { [odahId!]: 1, guest: 2 },
+			});
+
+			await useOnlineStore.getState().joinRoom("host", "Host", "#3b82f6");
+
+			const state = useOnlineStore.getState();
+			expect(state.roomCode).toBe("HOST");
+			expect(state.isHost).toBe(true);
+			expect(selectCanStartGame(state)).toBe(false); // presence not yet in
+		});
+
+		it("leaves locally at once even when the server never acknowledges", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			await useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			adapter.leaveRoom.mockReturnValueOnce(new Promise<void>(() => {}));
+			useOnlineStore.setState({ error: "stale" });
+
+			useOnlineStore.getState().leaveRoom();
+
+			const state = useOnlineStore.getState();
+			expect(adapter.leaveRoom).toHaveBeenCalledOnce();
+			expect(state.roomCode).toBeNull();
+			expect(state.room).toBeNull();
+			expect(state.isHost).toBe(false);
+			expect(state.presenceData).toEqual({});
+			expect(state.error).toBeNull();
+			// The room listener is detached, so late snapshots cannot re-enter.
+			adapter._simulateRoomUpdate(createTestRoom({ roomCode: "MOCK" }));
+			expect(useOnlineStore.getState().room).toBeNull();
+		});
+
+		it("reports a rejected leave write without re-entering the room", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			const consoleError = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => {});
+			await useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			const rejection = new Error("permission denied");
+			adapter.leaveRoom.mockRejectedValueOnce(rejection);
+
+			useOnlineStore.getState().leaveRoom();
+
+			await vi.waitFor(() =>
+				expect(consoleError).toHaveBeenCalledWith(
+					"Failed to leave room cleanly",
+					rejection,
+				),
+			);
+			expect(useOnlineStore.getState().roomCode).toBeNull();
+			consoleError.mockRestore();
+		});
+
+		it("keeps the last room and surfaces an error when the room listener fails", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			const consoleError = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => {});
+			await useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			const room = createTestRoom({ roomCode: "MOCK", status: "playing" });
+			adapter._simulateRoomUpdate(room);
+			const failure = new Error("quota exceeded");
+
+			adapter._simulateRoomError(failure);
+
+			const state = useOnlineStore.getState();
+			expect(state.room).toBe(room);
+			expect(state.roomCode).toBe("MOCK");
+			expect(state.error).toContain("Lost connection to room MOCK");
+			expect(state.error).toContain("Refresh the page");
+			expect(state.error).not.toMatch(/leave/i);
+			expect(state.error).toContain("quota exceeded");
+			// A later valid snapshot withdraws this listener's error, and only it.
+			adapter._simulateRoomUpdate(room);
+			expect(useOnlineStore.getState().error).toBeNull();
+			adapter._simulateRoomError(failure);
+			useOnlineStore.setState({ error: "Failed to start game" });
+			adapter._simulateRoomUpdate(room);
+			expect(useOnlineStore.getState().error).toBe("Failed to start game");
+			expect(consoleError).toHaveBeenCalledWith(
+				"Room subscription failed",
+				failure,
+			);
+			consoleError.mockRestore();
 		});
 
 		it("should throw when creating room without connection", async () => {

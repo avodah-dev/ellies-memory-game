@@ -24,16 +24,26 @@ const adapter = vi.hoisted(() => ({
 vi.mock("../../services/sync/FirestoreSyncAdapter", () => ({
 	getFirestoreSyncAdapter: () => adapter,
 }));
+const router = vi.hoisted(() => ({
+	pathname: "/online/waiting",
+	navigate: vi.fn(),
+}));
 vi.mock("@tanstack/react-router", () => ({
-	useNavigate: () => vi.fn(),
-	useRouterState: () => ({ location: { pathname: "/online/waiting" } }),
+	useNavigate: () => router.navigate,
+	useRouterState: () => ({ location: { pathname: router.pathname } }),
 }));
 vi.mock("../../stores", async () => {
 	const { create } = await import("zustand");
 	return {
 		useOnlineStore: create(() => ({})),
 		useSettingsStore: () => ({
-			settings: { cardPack: "animals", onlinePairCount: 4 },
+			settings: {
+				cardPack: "animals",
+				onlinePairCount: 4,
+				player1Color: "#3b82f6",
+				background: "default",
+				cardBack: "default",
+			},
 		}),
 	};
 });
@@ -56,6 +66,7 @@ const unsubscribe = vi.fn();
 let consoleError: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
 	vi.clearAllMocks();
+	router.pathname = "/online/waiting";
 	consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 	adapter.getState.mockResolvedValue(null); // The game listener has not delivered the new document yet.
 	adapter.subscribeToState.mockImplementation((callback) => {
@@ -64,6 +75,7 @@ beforeEach(() => {
 	});
 	useOnlineStore.setState({
 		connectionStatus: "connected",
+		isCreatingRoom: false,
 		roomCode: "ABCD",
 		room: createTestRoom({ roomCode: "ABCD" }),
 		isHost: true,
@@ -198,4 +210,163 @@ it("ignores a late guest snapshot after unsubscribing from the lobby", () => {
 	act(() => deliver(createTestOnlineGameState()));
 	expect(onGameStart).not.toHaveBeenCalled();
 	expect(unsubscribe).toHaveBeenCalledTimes(1);
+});
+
+it("resumes a round already in progress when the host rejoins with the code", () => {
+	useOnlineStore.setState({
+		isHost: true,
+		room: createTestRoom({ status: "playing" }),
+	});
+	const onGameStart = vi.fn();
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={onGameStart} />);
+	expect(adapter.subscribeToState).toHaveBeenCalledOnce();
+	const confirmed = createTestOnlineGameState({ gameRound: 4 });
+	act(() => deliver(confirmed));
+	expect(onGameStart).toHaveBeenCalledExactlyOnceWith(confirmed);
+	expect(adapter.startGame).not.toHaveBeenCalled();
+});
+
+it("does not open a second game listener while the host's own start is committing", async () => {
+	let commit!: (state: GameState) => void;
+	adapter.startGame.mockReturnValue(
+		new Promise<GameState>((resolve) => {
+			commit = resolve;
+		}),
+	);
+	const onGameStart = vi.fn();
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={onGameStart} />);
+	fireEvent.click(screen.getByRole("button", { name: "Start Game" }));
+	act(() =>
+		useOnlineStore.setState({ room: createTestRoom({ status: "playing" }) }),
+	);
+	const confirmed = createTestOnlineGameState();
+	await act(async () => commit(confirmed));
+	await waitFor(() =>
+		expect(onGameStart).toHaveBeenCalledExactlyOnceWith(confirmed),
+	);
+	expect(adapter.subscribeToState).not.toHaveBeenCalled();
+});
+
+it("shows why room creation failed and retries from the same screen", async () => {
+	router.pathname = "/online/create";
+	const createRoom = vi.fn().mockImplementation(async () => {
+		useOnlineStore.setState({ error: "Presence connection timeout" });
+		throw new Error("Presence connection timeout");
+	});
+	useOnlineStore.setState({
+		roomCode: null,
+		room: null,
+		isHost: false,
+		error: "Presence connection timeout",
+		createRoom,
+		setPlayerNamePreference: vi.fn(),
+		getLastOnlinePreferences: () => ({
+			cardPack: null,
+			background: null,
+			cardBack: null,
+		}),
+	});
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	expect(screen.getByRole("alert")).toHaveTextContent(
+		"Presence connection timeout",
+	);
+	expect(screen.queryByText("Creating room...")).toBeNull();
+	fireEvent.click(screen.getByRole("button", { name: "Try Again" }));
+	expect(createRoom).toHaveBeenCalledOnce();
+	await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+	fireEvent.click(screen.getByRole("button", { name: "Back" }));
+	expect(router.navigate).toHaveBeenCalledWith({
+		to: "/online",
+		replace: true,
+	});
+});
+
+it("keeps showing the spinner when the create route mounts a fresh lobby mid-request", () => {
+	// /online and /online/create mount separate lobby instances, so request
+	// state must come from the store rather than the component.
+	router.pathname = "/online/create";
+	useOnlineStore.setState({
+		roomCode: null,
+		room: null,
+		error: null,
+		isCreatingRoom: true,
+	});
+	const view = render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	expect(screen.getByText("Creating room...")).toBeInTheDocument();
+	expect(view.container.querySelector("svg.animate-spin")).not.toBeNull();
+	expect(screen.queryByText("...")).toBeNull();
+	expect(router.navigate).not.toHaveBeenCalled();
+	// A request that ends without an error or a room leaves nothing to show.
+	act(() => useOnlineStore.setState({ isCreatingRoom: false }));
+	expect(screen.queryByText("Creating room...")).toBeNull();
+	expect(router.navigate).toHaveBeenCalledWith({
+		to: "/online",
+		replace: true,
+	});
+});
+
+it("returns to the lobby when browser history lands on an idle create screen", () => {
+	router.pathname = "/online/create";
+	useOnlineStore.setState({ roomCode: null, room: null, error: null });
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	expect(screen.queryByText("Creating room...")).toBeNull();
+	expect(router.navigate).toHaveBeenCalledWith({
+		to: "/online",
+		replace: true,
+	});
+});
+
+it("never starts from the waiting room while the room already has a round in progress", () => {
+	useOnlineStore.setState({
+		isHost: true,
+		room: createTestRoom({ status: "playing" }),
+	});
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	fireEvent.click(screen.getByRole("button", { name: "Start Game" }));
+	expect(adapter.startGame).not.toHaveBeenCalled();
+});
+
+it("asks the transaction to require a waiting room for a lobby start", async () => {
+	adapter.startGame.mockReturnValue(new Promise(() => {}));
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	fireEvent.click(screen.getByRole("button", { name: "Start Game" }));
+	await waitFor(() => expect(adapter.startGame).toHaveBeenCalledOnce());
+	expect(adapter.startGame.mock.calls[0][2]).toEqual({
+		requireStatus: "waiting",
+	});
+});
+
+it("shows icons rather than placeholder words while connecting and after a failure", () => {
+	useOnlineStore.setState({ connectionStatus: "connecting" });
+	const { container, rerender } = render(
+		<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />,
+	);
+	expect(screen.getByText("Connecting to server...")).toBeInTheDocument();
+	expect(container.textContent).not.toMatch(/\bconnect\b/);
+	expect(container.querySelector("svg.animate-spin")).not.toBeNull();
+	act(() =>
+		useOnlineStore.setState({
+			connectionStatus: "disconnected",
+			error: "Auth unavailable",
+			connect: vi.fn().mockResolvedValue(undefined),
+		}),
+	);
+	rerender(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	expect(screen.getByText("Auth unavailable")).toBeInTheDocument();
+	expect(container.textContent).not.toMatch(/\berr\b/);
+});
+
+it("tells a guest the room closed when the host leaves, and offers a way back", () => {
+	const leaveRoom = vi.fn();
+	useOnlineStore.setState({
+		isHost: false,
+		room: createTestRoom({ status: "finished" }),
+		leaveRoom,
+	});
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	expect(screen.getByRole("alert")).toHaveTextContent("This room has closed");
+	expect(screen.queryByRole("button", { name: "Start Game" })).toBeNull();
+	fireEvent.click(screen.getByRole("button", { name: "Back to Online Lobby" }));
+	expect(leaveRoom).toHaveBeenCalledOnce();
+	expect(router.navigate).toHaveBeenCalledWith({ to: "/online" });
 });

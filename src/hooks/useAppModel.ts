@@ -1268,18 +1268,12 @@ export function useAppModel() {
 		navigateToStep("theme", "new game clicked");
 	};
 
-	const handleBackToModeSelect = useCallback(async () => {
+	const handleBackToModeSelect = useCallback(() => {
 		// Full reset - go back to "How would you like to play?"
 		setShowResetConfirmation(false);
 
 		// If in online mode, leave the room
-		if (gameMode === "online") {
-			try {
-				await leaveRoom();
-			} catch (error) {
-				console.error("Error leaving room:", error);
-			}
-		}
+		if (gameMode === "online") leaveRoom();
 
 		// Reset all game state
 		resetGame();
@@ -1307,12 +1301,8 @@ export function useAppModel() {
 	};
 
 	// Handler for leaving an online game (e.g., when opponent disconnects)
-	const handleLeaveOnlineGame = useCallback(async () => {
-		try {
-			await leaveRoom();
-		} catch (error) {
-			console.error("Error leaving room:", error);
-		}
+	const handleLeaveOnlineGame = useCallback(() => {
+		leaveRoom();
 
 		// Reset local game state
 		resetGame();
