@@ -99,12 +99,16 @@ async function expectFlipDiagnostics(host: Page, guest: Page) {
 	await expect
 		.poll(async () => {
 			const [h, g] = await Promise.all([diagnostics(host), diagnostics(guest)]);
-			const write = h.find(
-				(row) =>
-					row.message === "mm.sync.write.result" &&
-					row.context.ok === true &&
-					row.context.context === "flip:card-0",
-			);
+			// The latest card-0 flip is the one just made. Earlier flips can be
+			// coalesced into a later snapshot's paint, which is expected.
+			const write = h
+				.filter(
+					(row) =>
+						row.message === "mm.sync.write.result" &&
+						row.context.ok === true &&
+						row.context.context === "flip:card-0",
+				)
+				.at(-1);
 			if (!write) return false;
 			const version = write.context.sync_version,
 				round = write.context.game_round;
@@ -620,8 +624,10 @@ test("a matched flight keeps its decoded face and cannot intercept the next pres
 	});
 	await card(page, bottom).click();
 	await card(page, bottom ^ 1).click();
-	// A third press resolves this known match immediately, before the deal ends.
-	await card(page, 0).click();
+	// A third press on a card outside the pair resolves this known match
+	// immediately, before the deal ends. The shuffle can put card 0 or 1 at the
+	// bottom, so card 0 is not always outside the pair.
+	await card(page, bottom < 2 ? 2 : 0).click();
 	await expect(page.locator(".card-fly-to-player").first()).toBeVisible();
 	expect(
 		await page
