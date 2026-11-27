@@ -254,6 +254,32 @@ describe("onlineStore", () => {
 			expect(state.isHost).toBe(false);
 		});
 
+		it("tracks an in-flight room creation in the store", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			let release!: () => void;
+			adapter.createRoom.mockImplementationOnce(
+				() =>
+					new Promise<string>((_resolve, reject) => {
+						release = () => reject(new Error("Presence connection timeout"));
+					}),
+			);
+			const creating = useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(true);
+			release();
+			await expect(creating).rejects.toThrow("Presence connection timeout");
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(false);
+			expect(useOnlineStore.getState().error).toBe(
+				"Presence connection timeout",
+			);
+		});
+
 		it("keeps a host who rejoins their own room as the host", async () => {
 			const { odahId } = useOnlineStore.getState();
 			const adapter = getMockFirestoreSyncAdapter();
@@ -350,7 +376,16 @@ describe("onlineStore", () => {
 			expect(state.room).toBe(room);
 			expect(state.roomCode).toBe("MOCK");
 			expect(state.error).toContain("Lost connection to room MOCK");
+			expect(state.error).toContain("Refresh the page");
+			expect(state.error).not.toMatch(/leave/i);
 			expect(state.error).toContain("quota exceeded");
+			// A later valid snapshot withdraws this listener's error, and only it.
+			adapter._simulateRoomUpdate(room);
+			expect(useOnlineStore.getState().error).toBeNull();
+			adapter._simulateRoomError(failure);
+			useOnlineStore.setState({ error: "Failed to start game" });
+			adapter._simulateRoomUpdate(room);
+			expect(useOnlineStore.getState().error).toBe("Failed to start game");
 			expect(consoleError).toHaveBeenCalledWith(
 				"Room subscription failed",
 				failure,

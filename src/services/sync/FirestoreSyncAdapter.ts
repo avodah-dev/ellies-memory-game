@@ -41,6 +41,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	private presenceService: PresenceService | null = null;
 	private subscriptions = new Set<() => void>();
 	private pendingMoves = new Set<Promise<void>>();
+	// Cleanup from the most recent leave. Rejoining the same room waits for it,
+	// so the old membership write and presence session cannot undo the new ones.
+	private pendingLeave: { code: string; settled: Promise<unknown> } | null =
+		null;
 	private services: FirebaseServices;
 	private observer: ReturnType<typeof isolateSyncObserver>;
 	constructor(
@@ -100,8 +104,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		color: string,
 		slot: 1 | 2,
 	) {
-		await this.presenceService?.stop();
-		this.presenceService = new PresenceService(
+		const service = new PresenceService(
 			code,
 			this.requireUser(),
 			name,
@@ -109,7 +112,20 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			slot,
 			this.services.rtdb,
 		);
-		await this.presenceService.start();
+		this.presenceService = service;
+		try {
+			await service.start();
+		} catch (error) {
+			// Never keep a failed session: a retry must not wait on its cleanup,
+			// whose RTDB writes may never be acknowledged.
+			if (this.presenceService === service) this.presenceService = null;
+			void service
+				.stop()
+				.catch((stopError) =>
+					console.error("Failed to stop a failed presence session", stopError),
+				);
+			throw error;
+		}
 	}
 	async createRoom(options: CreateRoomOptions): Promise<string> {
 		const uid = this.requireUser();
@@ -161,7 +177,9 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	async joinRoom(roomCode: string, options: JoinRoomOptions): Promise<Room> {
 		const uid = this.requireUser(),
 			code = roomCode.toUpperCase();
+		if (this.pendingLeave?.code === code) await this.pendingLeave.settled;
 		const reference = doc(this.services.db, "rooms", code);
+		let claimedSlot = false;
 		const room = await runTransaction(this.services.db, async (tx) => {
 			const snapshot = await tx.get(reference);
 			if (!snapshot.exists()) throw new Error("Room not found");
@@ -172,6 +190,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 				if (Object.keys(room.playerSlots).length >= 2)
 					throw new Error("Room is full");
 				room.playerSlots[uid] = 2;
+				claimedSlot = true;
 				tx.update(reference, {
 					[`playerSlots.${uid}`]: 2,
 					lastActivity: serverTimestamp(),
@@ -181,12 +200,27 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		});
 		this.roomCode = code;
 		this.isHost = room.hostId === uid;
-		await this.presence(
-			code,
-			options.name,
-			options.color,
-			room.playerSlots[uid],
-		);
+		try {
+			await this.presence(
+				code,
+				options.name,
+				options.color,
+				room.playerSlots[uid],
+			);
+		} catch (error) {
+			// The join failed from the player's point of view. Give back a slot
+			// this attempt claimed so the room is not left full.
+			this.roomCode = null;
+			this.isHost = false;
+			if (claimedSlot)
+				void updateDoc(reference, {
+					[`playerSlots.${uid}`]: deleteField(),
+					lastActivity: serverTimestamp(),
+				}).catch((releaseError) =>
+					console.error("Failed to release a claimed slot", releaseError),
+				);
+			throw error;
+		}
 		return room;
 	}
 	/**
@@ -207,8 +241,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		this.roomCode = null;
 		this.isHost = false;
 		this.presenceService = null;
-		return (async () => {
-			await updateDoc(
+		// Membership and presence are independent: a rejected membership write
+		// must not leave this player advertised as online in the room.
+		const cleanup = Promise.allSettled([
+			updateDoc(
 				doc(this.services.db, "rooms", code),
 				wasHost
 					? { status: "finished", lastActivity: serverTimestamp() }
@@ -216,9 +252,21 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 							[`playerSlots.${uid}`]: deleteField(),
 							lastActivity: serverTimestamp(),
 						},
+			),
+			presence?.stop(),
+		]);
+		const pending = { code, settled: cleanup };
+		this.pendingLeave = pending;
+		void cleanup.then(() => {
+			if (this.pendingLeave === pending) this.pendingLeave = null;
+		});
+		return cleanup.then((results) => {
+			const failure = results.find(
+				(result): result is PromiseRejectedResult =>
+					result.status === "rejected",
 			);
-			await presence?.stop();
-		})();
+			if (failure) throw failure.reason;
+		});
 	}
 	async getRoom(code: string) {
 		const snap = await getDocFromServer(
@@ -276,7 +324,16 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			lastActivity: serverTimestamp(),
 		});
 	}
-	async startGame(code: string, state: GameState) {
+	/**
+	 * Replaces the room's round. A lobby start passes `requireStatus: "waiting"`
+	 * so it can never overwrite a round already in progress; a replay from the
+	 * results screen replaces a finished round and omits it.
+	 */
+	async startGame(
+		code: string,
+		state: GameState,
+		options: { requireStatus?: Room["status"] } = {},
+	) {
 		if (!this.isHost) throw new Error("Only host can start game");
 		// Round replacement is a lifecycle boundary. Already-submitted writes
 		// cannot be cancelled; settle them before the transaction reads the round.
@@ -287,6 +344,12 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			const previous = await tx.get(game),
 				roomSnap = await tx.get(room);
 			const membership = parseRoom(roomSnap.data());
+			if (options.requireStatus && membership.status !== options.requireStatus)
+				throw new Error(
+					membership.status === "playing"
+						? "A round is already in progress"
+						: `Room is ${membership.status}`,
+				);
 			if (Object.keys(membership.playerSlots).length !== 2)
 				throw new Error("Both players must join before starting");
 			const gameRound = previous.exists()

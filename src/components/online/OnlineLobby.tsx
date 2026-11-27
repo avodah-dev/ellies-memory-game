@@ -57,6 +57,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 
 	const {
 		connectionStatus,
+		isCreatingRoom,
 		roomCode,
 		room,
 		isHost,
@@ -102,6 +103,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		if (
 			!isHost ||
 			!room ||
+			room.status !== "waiting" ||
 			!roomCode ||
 			startingRef.current ||
 			startedState ||
@@ -155,7 +157,9 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 
 			// Start game via adapter (syncs to Firestore)
 			const adapter = getFirestoreSyncAdapter();
-			const confirmed = await adapter.startGame(roomCode, onlineState);
+			const confirmed = await adapter.startGame(roomCode, onlineState, {
+				requireStatus: "waiting",
+			});
 			if (
 				activeLobby.current &&
 				useOnlineStore.getState().roomCode === roomCode
@@ -308,10 +312,19 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 		} else if (view === "choice") {
 			onBack();
 		} else {
-			navigate({ to: "/online" });
+			// Replace, so browser Back cannot return to a create screen with no
+			// request running.
+			navigate({ to: "/online", replace: true });
 			clearError();
 		}
 	};
+
+	// The create screen exists only while a request runs or after one failed.
+	// Reaching it any other way (browser history) has nothing to show.
+	useEffect(() => {
+		if (view === "create" && !isCreatingRoom && !error && !roomCode)
+			navigate({ to: "/online", replace: true });
+	}, [view, isCreatingRoom, error, roomCode, navigate]);
 
 	// Render based on current view
 	const renderContent = () => {
@@ -389,8 +402,10 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 							<button
 								type="button"
 								onClick={() => {
+									// Start the request first, so the create screen never renders
+									// without one running.
+									void handleCreateRoom();
 									navigate({ to: "/online/create" });
-									handleCreateRoom();
 								}}
 								disabled={isLoading}
 								className="p-8 rounded-xl border-3 border-gray-200 bg-white hover:border-blue-400 hover:shadow-lg transition-all duration-300 transform hover:scale-105 group disabled:opacity-50"
@@ -437,7 +452,8 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 				);
 
 			case "create":
-				return error && !isLoading ? (
+				if (!isCreatingRoom && !error) return null;
+				return !isCreatingRoom ? (
 					<div className="text-center space-y-6 py-8">
 						<TriangleAlert
 							aria-hidden="true"

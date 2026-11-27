@@ -58,7 +58,14 @@ export const WaitingRoom = ({
 
 	const players = Object.entries(presenceData);
 	const hasOpponent = players.length === 2;
-	const canStart = isHost && hasOpponent && opponentConnected && !isStarting;
+	// A host who rejoined a round in progress waits here until the game resumes;
+	// starting would replace that round.
+	const canStart =
+		isHost &&
+		room.status === "waiting" &&
+		hasOpponent &&
+		opponentConnected &&
+		!isStarting;
 
 	// Sort players by slot
 	const sortedPlayers = [...players].sort(([, a], [, b]) => a.slot - b.slot);

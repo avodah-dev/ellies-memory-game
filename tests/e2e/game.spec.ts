@@ -1444,27 +1444,41 @@ test("the host can rejoin after a refresh, finish the round and start a rematch"
 		await host.getByRole("button", { name: "Start Game", exact: true }).click();
 		for (const page of [host, guest]) await expect(page).toHaveURL(/\/online\/game$/);
 
+		// Progress made before the refresh must survive the rejoin.
+		await match(host, 0);
+		await expect(card(guest, 0)).toHaveCount(0);
+		const remaining = await host
+			.locator("main button[data-card-id]:enabled")
+			.count();
+
 		// A refresh always restarts the app at home; the host returns with the code.
-		const beforeReload = applicationErrors.length;
-		await host.reload();
-		await expect(host).toHaveURL(/\/$/);
-		// WebKit reports Firestore channel requests cut off by the unload itself.
-		// Drop only those; any other error raised around the reload still fails.
+		// WebKit raises an uncaught page error for each Firestore channel request
+		// the unload cuts off, before the new document loads. Record exactly those
+		// errors from the host page during the reload and remove only them; any
+		// other error, from either player or at any other time, still fails.
 		const unloadAbort =
 			/Firestore\/(Write|Listen)\/channel\?.* due to access control checks\.$/;
-		applicationErrors.splice(
-			beforeReload,
-			Infinity,
-			...applicationErrors
-				.slice(beforeReload)
-				.filter((message) => !unloadAbort.test(message)),
-		);
+		const unloadAborts: string[] = [];
+		const recordUnloadAbort = (error: Error) => {
+			if (unloadAbort.test(error.message)) unloadAborts.push(error.message);
+		};
+		host.on("pageerror", recordUnloadAbort);
+		await host.reload();
+		await expect(host).toHaveURL(/\/$/);
+		host.off("pageerror", recordUnloadAbort);
+		for (const message of unloadAborts) {
+			const index = applicationErrors.lastIndexOf(message);
+			if (index !== -1) applicationErrors.splice(index, 1);
+		}
 		await joinOnlineRoom(host, code);
 		await expect(host).toHaveURL(/\/online\/game$/);
 		await expect(host.getByText("Your Turn!", { exact: true })).toBeVisible();
+		await expect(card(host, 0)).toHaveCount(0);
+		await expect(host.locator("main button[data-card-id]:enabled")).toHaveCount(
+			remaining,
+		);
 
-		const count = await host.locator("main button[data-card-id]:enabled").count();
-		for (let id = 0; id < count; id += 2) await match(host, id);
+		for (let id = 2; id < remaining + 2; id += 2) await match(host, id);
 		for (const page of [host, guest]) await expect(page).toHaveURL(/\/game-over$/);
 		const playAgain = host.getByRole("button", { name: /play again/i });
 		await expect(playAgain).toBeEnabled();

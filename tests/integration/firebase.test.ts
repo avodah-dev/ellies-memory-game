@@ -244,9 +244,11 @@ describe("real Firebase adapters and checked-in rules", () => {
 		const leaving = guest.a.leaveRoom();
 		try {
 			await entered;
-			expect(
-				(await host.a.getRoom(code))!.playerSlots[guest.uid],
-			).toBeUndefined();
+			// Presence cleanup runs alongside the membership write.
+			await eventually(
+				async () =>
+					(await host.a.getRoom(code))!.playerSlots[guest.uid] === undefined,
+			);
 			expect(phases).toEqual(["subscribe", "unsubscribe"]);
 			expect(errors).toEqual([]);
 			await expect(
@@ -306,6 +308,29 @@ describe("real Firebase adapters and checked-in rules", () => {
 		await enableNetwork(guest.c.db);
 		await leaving;
 		expect((await host.a.getRoom(code))!.playerSlots[guest.uid]).toBeUndefined();
+	});
+	it("rejoining the same room right after an offline leave keeps the new membership and presence", async () => {
+		const { host, guest, code } = await room();
+		await disableNetwork(guest.c.db);
+		void guest.a.leaveRoom();
+		await enableNetwork(guest.c.db);
+		await guest.a.joinRoom(code, {
+			odahId: guest.uid,
+			name: "Guest",
+			color: "#654321",
+		});
+		expect((await host.a.getRoom(code))!.playerSlots[guest.uid]).toBe(2);
+		await eventually(async () => {
+			const presence = await get(ref(host.c.rtdb, `presence/${code}/${guest.uid}`));
+			return presence.val()?.online === true;
+		});
+		// Nothing from the old session arrives later to undo the rejoin.
+		await new Promise((r) => setTimeout(r, 500));
+		expect((await host.a.getRoom(code))!.playerSlots[guest.uid]).toBe(2);
+		expect(
+			(await get(ref(host.c.rtdb, `presence/${code}/${guest.uid}`))).val()
+				.online,
+		).toBe(true);
 	});
 	it("closes a created room when the host's presence never comes online", async () => {
 		const host = await client();

@@ -211,11 +211,10 @@ it("leaves the room locally at once while the membership write is still unacknow
 		"playerSlots.guest": expect.anything(),
 		lastActivity: expect.anything(),
 	});
-	// Presence cleanup follows the acknowledged membership write.
-	expect(mock.presenceStop).not.toHaveBeenCalled();
+	// Presence cleanup does not depend on the membership acknowledgement.
+	expect(mock.presenceStop).toHaveBeenCalledOnce();
 	acknowledge();
 	await leaving;
-	expect(mock.presenceStop).toHaveBeenCalledOnce();
 	await adapter.leaveRoom();
 	expect(mock.update).toHaveBeenCalledOnce();
 	await adapter.disconnect();
@@ -263,5 +262,100 @@ it("closes a newly created room and detaches when the host's presence cannot sta
 		expect.stringMatching(/^rooms\/[A-Z0-9]{4}$/),
 		{ status: "finished", lastActivity: expect.anything() },
 	);
+	await host.disconnect();
+});
+it("stops presence even when the membership write is rejected, and still reports the rejection", async () => {
+	const adapter = await joined();
+	mock.update.mockRejectedValue(permission);
+	await expect(adapter.leaveRoom()).rejects.toBe(permission);
+	expect(mock.presenceStop).toHaveBeenCalledOnce();
+	await adapter.disconnect();
+});
+it("makes a same-room rejoin wait for the previous leave's cleanup", async () => {
+	const adapter = await joined();
+	let acknowledge!: () => void;
+	mock.update.mockReturnValueOnce(
+		new Promise<void>((resolve) => {
+			acknowledge = resolve;
+		}),
+	);
+	void adapter.leaveRoom();
+	mock.transaction.mockClear();
+	const rejoining = adapter.joinRoom("abcd", {
+		odahId: "guest",
+		name: "Guest",
+		color: "red",
+	});
+	await new Promise((r) => setTimeout(r, 10));
+	// The join transaction must not read membership before the leave commits.
+	expect(mock.transaction).not.toHaveBeenCalled();
+	acknowledge();
+	await rejoining;
+	expect(mock.transaction).toHaveBeenCalledOnce();
+	expect(adapter.getRoomCode()).toBe("ABCD");
+	await adapter.disconnect();
+});
+it("does not make a join to a different room wait for an unrelated leave", async () => {
+	const adapter = await joined();
+	mock.update.mockReturnValueOnce(new Promise<void>(() => {}));
+	void adapter.leaveRoom();
+	const other = { ...room, roomCode: "WXYZ" };
+	mock.transaction.mockImplementation(async (_db, action) =>
+		action({ get: async () => ({ exists: () => true, data: () => other }) }),
+	);
+	await adapter.joinRoom("WXYZ", { odahId: "guest", name: "Guest", color: "red" });
+	expect(adapter.getRoomCode()).toBe("WXYZ");
+	await adapter.disconnect();
+});
+it("releases the claimed slot and detaches when presence fails after joining", async () => {
+	const adapter = new FirestoreSyncAdapter(services, observer);
+	await adapter.connect();
+	const waiting = createTestRoom({ roomCode: "ABCD" });
+	const update = vi.fn();
+	mock.transaction.mockImplementation(async (_db, action) =>
+		action({
+			get: async () => ({ exists: () => true, data: () => waiting }),
+			update,
+		}),
+	);
+	const timeout = new Error("Presence connection timeout");
+	mock.presenceStart.mockRejectedValueOnce(timeout);
+	await expect(
+		adapter.joinRoom("ABCD", { odahId: "guest", name: "Guest", color: "red" }),
+	).rejects.toBe(timeout);
+	expect(update).toHaveBeenCalledOnce();
+	expect(adapter.getRoomCode()).toBeNull();
+	expect(mock.update).toHaveBeenCalledExactlyOnceWith("rooms/ABCD", {
+		"playerSlots.guest": expect.anything(),
+		lastActivity: expect.anything(),
+	});
+	// The failed session is stopped in the background and never awaited again.
+	expect(mock.presenceStop).toHaveBeenCalledOnce();
+	await adapter.disconnect();
+	expect(mock.presenceStop).toHaveBeenCalledOnce();
+});
+it("refuses a lobby start that would replace a round in progress", async () => {
+	const host = new FirestoreSyncAdapter(
+		{ ...services, getOrCreateUserId: async () => "host-odah-id" },
+		observer,
+	);
+	await host.connect();
+	await host.joinRoom("ABCD", { odahId: "host-odah-id", name: "Host", color: "red" });
+	const playing = { ...room, status: "playing" };
+	const set = vi.fn();
+	mock.transaction.mockImplementation(async (_db, action) =>
+		action({
+			get: async (path: string) =>
+				path.startsWith("rooms/")
+					? { exists: () => true, data: () => playing }
+					: { exists: () => false },
+			set,
+			update: vi.fn(),
+		}),
+	);
+	await expect(
+		host.startGame("ABCD", {} as never, { requireStatus: "waiting" }),
+	).rejects.toThrow("A round is already in progress");
+	expect(set).not.toHaveBeenCalled();
 	await host.disconnect();
 });

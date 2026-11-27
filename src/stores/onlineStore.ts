@@ -40,19 +40,28 @@ const startRoomSubscription = (
 	}
 
 	const adapter = getFirestoreSyncAdapter();
+	let roomError: string | null = null;
 	roomUnsubscribe = adapter.subscribeToRoom(
 		roomCode,
 		(room) => {
-			set({ room, ...deriveRoomPresence(get(), room) });
+			// A valid snapshot after a malformed one means the room is readable
+			// again; withdraw only the error this listener raised.
+			const recovered = roomError !== null && get().error === roomError;
+			roomError = null;
+			set({
+				room,
+				...deriveRoomPresence(get(), room),
+				...(recovered ? { error: null } : {}),
+			});
 		},
 		(error) => {
 			// Keep the last confirmed room: a failed listener says nothing about
 			// membership, and clearing it would silently drop the player out of
-			// online mode. Surface the failure through the online error banner.
+			// online mode. Leaving would give up the seat (a guest cannot rejoin a
+			// round in progress), so direct the player to refresh, which keeps it.
 			console.error("Room subscription failed", error);
-			set({
-				error: `Lost connection to room ${roomCode}. Leave the game and rejoin with the room code. (${error.message})`,
-			});
+			roomError = `Lost connection to room ${roomCode}. Refresh the page and rejoin with code ${roomCode}; your seat is kept. (${error.message})`;
+			set({ error: roomError });
 		},
 	);
 };
@@ -81,6 +90,8 @@ interface OnlineStoreState {
 	room: Room | null;
 	roomCode: string | null;
 	isHost: boolean;
+	// Lobby routes remount the lobby, so request state lives here, not in it.
+	isCreatingRoom: boolean;
 	playerName: string;
 
 	// Presence
@@ -170,6 +181,7 @@ const initialState: OnlineStoreState = {
 	room: null,
 	roomCode: null,
 	isHost: false,
+	isCreatingRoom: false,
 	playerName: "Player",
 	rawPresenceData: {},
 	presenceData: {},
@@ -321,7 +333,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				throw new Error("Not connected");
 			}
 
-			set({ error: null });
+			set({ error: null, isCreatingRoom: true });
 
 			try {
 				const adapter = getFirestoreSyncAdapter();
@@ -345,6 +357,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				set({
 					roomCode,
 					isHost: true,
+					isCreatingRoom: false,
 				});
 
 				// Start room subscription automatically
@@ -355,6 +368,7 @@ export const useOnlineStore = create<OnlineStore>()(
 				set({
 					error:
 						error instanceof Error ? error.message : "Failed to create room",
+					isCreatingRoom: false,
 				});
 				throw error;
 			}
