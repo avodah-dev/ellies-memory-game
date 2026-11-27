@@ -391,7 +391,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 								maxLength={20}
 								className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
 								placeholder="Enter your name"
-								disabled={isLoading}
+								disabled={isLoading || isCreatingRoom}
 							/>
 							<p className="text-xs text-gray-500">
 								This name is shared when you create or join rooms.
@@ -407,7 +407,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 									void handleCreateRoom();
 									navigate({ to: "/online/create" });
 								}}
-								disabled={isLoading}
+								disabled={isLoading || isCreatingRoom}
 								className="p-8 rounded-xl border-3 border-gray-200 bg-white hover:border-blue-400 hover:shadow-lg transition-all duration-300 transform hover:scale-105 group disabled:opacity-50"
 							>
 								<div className="space-y-4">
@@ -426,7 +426,7 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 							<button
 								type="button"
 								onClick={() => navigate({ to: "/online/join" })}
-								disabled={isLoading}
+								disabled={isLoading || isCreatingRoom}
 								className="p-8 rounded-xl border-3 border-gray-200 bg-white hover:border-purple-400 hover:shadow-lg transition-all duration-300 transform hover:scale-105 group disabled:opacity-50"
 							>
 								<div className="space-y-4">
@@ -503,6 +503,31 @@ export const OnlineLobby = ({ onBack, onGameStart }: OnlineLobbyProps) => {
 				);
 
 			case "waiting":
+				// The host left, which closes the room for good.
+				if (room?.status === "finished")
+					return (
+						<div className="text-center space-y-6 py-8">
+							<TriangleAlert
+								aria-hidden="true"
+								className="mx-auto h-16 w-16 text-amber-500"
+							/>
+							<div role="alert" className="space-y-2">
+								<p className="text-lg font-semibold text-gray-800">
+									This room has closed
+								</p>
+								<p className="text-gray-600">
+									The host left. Create a new room or join another one.
+								</p>
+							</div>
+							<button
+								type="button"
+								onClick={handleLeaveRoom}
+								className="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+							>
+								Back to Online Lobby
+							</button>
+						</div>
+					);
 				return roomCode && room ? (
 					<WaitingRoom
 						roomCode={roomCode}

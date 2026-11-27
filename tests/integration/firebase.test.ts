@@ -309,28 +309,41 @@ describe("real Firebase adapters and checked-in rules", () => {
 		await leaving;
 		expect((await host.a.getRoom(code))!.playerSlots[guest.uid]).toBeUndefined();
 	});
-	it("rejoining the same room right after an offline leave keeps the new membership and presence", async () => {
+	it("a rejoin started while the leave is still queued waits for it and keeps the new membership and presence", async () => {
 		const { host, guest, code } = await room();
 		await disableNetwork(guest.c.db);
+		goOffline(guest.c.rtdb);
 		void guest.a.leaveRoom();
-		await enableNetwork(guest.c.db);
-		await guest.a.joinRoom(code, {
+		// Start the rejoin before either service can acknowledge the leave.
+		const rejoining = guest.a.joinRoom(code, {
 			odahId: guest.uid,
 			name: "Guest",
 			color: "#654321",
 		});
+		await new Promise((r) => setTimeout(r, 200));
+		goOnline(guest.c.rtdb);
+		await enableNetwork(guest.c.db);
+		await rejoining;
+		const presencePath = `presence/${code}/${guest.uid}`;
+		await eventually(
+			async () =>
+				(await host.a.getRoom(code))!.playerSlots[guest.uid] === 2 &&
+				(await get(ref(host.c.rtdb, presencePath))).val()?.online === true,
+		);
+		// Nothing from the old session lands later to undo the rejoin.
+		await new Promise((r) => setTimeout(r, 1000));
 		expect((await host.a.getRoom(code))!.playerSlots[guest.uid]).toBe(2);
-		await eventually(async () => {
-			const presence = await get(ref(host.c.rtdb, `presence/${code}/${guest.uid}`));
-			return presence.val()?.online === true;
-		});
-		// Nothing from the old session arrives later to undo the rejoin.
-		await new Promise((r) => setTimeout(r, 500));
-		expect((await host.a.getRoom(code))!.playerSlots[guest.uid]).toBe(2);
-		expect(
-			(await get(ref(host.c.rtdb, `presence/${code}/${guest.uid}`))).val()
-				.online,
-		).toBe(true);
+		expect((await get(ref(host.c.rtdb, presencePath))).val().online).toBe(true);
+	});
+	it("refuses to let the host rejoin a room they closed by leaving", async () => {
+		const { host, code } = await room();
+		await host.a.leaveRoom();
+		const refreshed = new FirestoreSyncAdapter(host.c);
+		adapters.push(refreshed);
+		await refreshed.connect();
+		await expect(
+			refreshed.joinRoom(code, { odahId: host.uid, name: "Host", color: "#123456" }),
+		).rejects.toThrow("This room has closed");
 	});
 	it("closes a created room when the host's presence never comes online", async () => {
 		const host = await client();

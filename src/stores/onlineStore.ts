@@ -26,6 +26,9 @@ import type {
 
 // Store the unsubscribe function outside of Zustand state
 let roomUnsubscribe: (() => void) | null = null;
+// Identifies the current room-creation request. Reset and disconnect advance
+// it, so a request that finishes afterwards cannot publish its room.
+let createRequest = 0;
 
 // Helper to start room subscription
 const startRoomSubscription = (
@@ -313,12 +316,14 @@ export const useOnlineStore = create<OnlineStore>()(
 				console.error("Disconnect error:", error);
 			}
 
+			createRequest++;
 			set({
 				connectionStatus: "disconnected",
 				odahId: null,
 				room: null,
 				roomCode: null,
 				isHost: false,
+				isCreatingRoom: false,
 				rawPresenceData: {},
 				presenceData: {},
 				opponentConnected: false,
@@ -328,11 +333,13 @@ export const useOnlineStore = create<OnlineStore>()(
 
 		// Room actions
 		createRoom: async (options) => {
-			const { odahId, setLastOnlinePreferences } = get();
+			const { odahId, setLastOnlinePreferences, isCreatingRoom } = get();
 			if (!odahId) {
 				throw new Error("Not connected");
 			}
+			if (isCreatingRoom) throw new Error("Already creating a room");
 
+			const request = ++createRequest;
 			set({ error: null, isCreatingRoom: true });
 
 			try {
@@ -346,6 +353,8 @@ export const useOnlineStore = create<OnlineStore>()(
 					cardBack: options.cardBack,
 					pairCount: options.pairCount,
 				});
+				if (request !== createRequest)
+					throw new Error("Room creation was canceled");
 
 				// Save preferences after creating room
 				setLastOnlinePreferences(
@@ -365,11 +374,13 @@ export const useOnlineStore = create<OnlineStore>()(
 
 				return roomCode;
 			} catch (error) {
-				set({
-					error:
-						error instanceof Error ? error.message : "Failed to create room",
-					isCreatingRoom: false,
-				});
+				// A canceled request has nothing left to report or clear.
+				if (request === createRequest)
+					set({
+						error:
+							error instanceof Error ? error.message : "Failed to create room",
+						isCreatingRoom: false,
+					});
 				throw error;
 			}
 		},
@@ -602,6 +613,7 @@ export const useOnlineStore = create<OnlineStore>()(
 		reset: () => {
 			// Stop room subscription before resetting
 			stopRoomSubscription();
+			createRequest++;
 			resetFirestoreSyncAdapter();
 			set((state) => ({
 				...initialState,

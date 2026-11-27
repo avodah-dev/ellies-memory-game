@@ -1559,3 +1559,33 @@ test("a failed room creation explains the failure and can be retried", async ({
 	await expect(page).toHaveURL(/\/online\/waiting$/, { timeout: 20000 });
 	await expect(page.getByTestId("room-code")).toHaveText(/^[A-Z0-9]{4}$/);
 });
+
+test("when the host leaves, the guest is told the room closed and the host cannot reopen it", async ({
+	browser,
+	page: host,
+	applicationErrors,
+}) => {
+	const guestContext = await newPlayerContext(browser, applicationErrors);
+	try {
+		const code = await createOnlineRoom(host, "Leaving Host");
+		const guest = await guestContext.newPage();
+		await home(guest);
+		await joinOnlineRoom(guest, code, "Stranded Guest");
+		await expect(guest).toHaveURL(/\/online\/waiting$/);
+		await host.getByRole("button", { name: "Leave Room", exact: true }).click();
+		await expect(host).toHaveURL(/\/online$/);
+
+		await expect(guest.getByRole("alert")).toContainText("This room has closed");
+		await guest.getByRole("button", { name: "Back to Online Lobby" }).click();
+		await expect(guest).toHaveURL(/\/online$/);
+
+		// The host is already in the online lobby after leaving.
+		await host.getByRole("button", { name: /join.*room/i }).click();
+		await host.getByPlaceholder("ABCD").fill(code);
+		await host.getByRole("button", { name: "Join Game", exact: true }).click();
+		await expect(host.getByText("This room has closed")).toBeVisible();
+		await expect(host).toHaveURL(/\/online\/join$/);
+	} finally {
+		await guestContext.close();
+	}
+});

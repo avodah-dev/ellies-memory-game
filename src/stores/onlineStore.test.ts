@@ -280,6 +280,66 @@ describe("onlineStore", () => {
 			);
 		});
 
+		it("allows only one room creation at a time", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			adapter.createRoom.mockImplementationOnce(() => new Promise(() => {}));
+			const options = {
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals" as const,
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			};
+			void useOnlineStore.getState().createRoom(options);
+			await expect(useOnlineStore.getState().createRoom(options)).rejects.toThrow(
+				"Already creating a room",
+			);
+			expect(adapter.createRoom).toHaveBeenCalledOnce();
+		});
+
+		it("ignores a room creation that finishes after a reset", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			let finish!: (code: string) => void;
+			adapter.createRoom.mockImplementationOnce(
+				() =>
+					new Promise<string>((resolve) => {
+						finish = resolve;
+					}),
+			);
+			const creating = useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			useOnlineStore.getState().reset();
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(false);
+			finish("LATE");
+			await expect(creating).rejects.toThrow("Room creation was canceled");
+			const state = useOnlineStore.getState();
+			expect(state.roomCode).toBeNull();
+			expect(state.isHost).toBe(false);
+			expect(state.error).toBeNull();
+		});
+
+		it("clears an in-flight creation on disconnect", async () => {
+			const adapter = getMockFirestoreSyncAdapter();
+			adapter.createRoom.mockImplementationOnce(() => new Promise(() => {}));
+			void useOnlineStore.getState().createRoom({
+				hostName: "Host",
+				hostColor: "#3b82f6",
+				cardPack: "animals",
+				background: "default",
+				cardBack: "default",
+				pairCount: 20,
+			});
+			await useOnlineStore.getState().disconnect();
+			expect(useOnlineStore.getState().isCreatingRoom).toBe(false);
+		});
+
 		it("keeps a host who rejoins their own room as the host", async () => {
 			const { odahId } = useOnlineStore.getState();
 			const adapter = getMockFirestoreSyncAdapter();

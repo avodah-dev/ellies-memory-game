@@ -33,7 +33,23 @@ import {
 	SyncError,
 } from "./stateProtocol";
 
+/**
+ * Cleanup writes still in flight for a room and user: a leave's membership
+ * write and presence stop, or a failed join's rollback. They target the same
+ * documents and RTDB path as a rejoin, so a join to that room waits for them;
+ * otherwise a stale cleanup could land after the rejoin and undo it. Queued
+ * writes belong to a Firebase client and outlive any one adapter, so the
+ * registry is kept per client rather than per adapter.
+ */
+const pendingCleanup = new WeakMap<
+	FirebaseServices,
+	Map<string, Set<Promise<unknown>>>
+>();
+const cleanupKey = (code: string, uid: string) => `${code}/${uid}`;
+
 export class FirestoreSyncAdapter extends BaseSyncAdapter {
+	/** How long a rejoin waits for the same room's earlier cleanup. */
+	static cleanupWaitMs = 10_000;
 	private connected = false;
 	private roomCode: string | null = null;
 	private odahId: string | null = null;
@@ -41,10 +57,6 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	private presenceService: PresenceService | null = null;
 	private subscriptions = new Set<() => void>();
 	private pendingMoves = new Set<Promise<void>>();
-	// Cleanup from the most recent leave. Rejoining the same room waits for it,
-	// so the old membership write and presence session cannot undo the new ones.
-	private pendingLeave: { code: string; settled: Promise<unknown> } | null =
-		null;
 	private services: FirebaseServices;
 	private observer: ReturnType<typeof isolateSyncObserver>;
 	constructor(
@@ -98,15 +110,52 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		this.subscriptions.add(dispose);
 		return dispose;
 	}
+	private trackCleanup(code: string, uid: string, work: Promise<unknown>) {
+		let rooms = pendingCleanup.get(this.services);
+		if (!rooms) pendingCleanup.set(this.services, (rooms = new Map()));
+		const key = cleanupKey(code, uid);
+		const pending = rooms.get(key) ?? new Set<Promise<unknown>>();
+		rooms.set(key, pending);
+		const settled = work.then(
+			() => undefined,
+			() => undefined,
+		);
+		pending.add(settled);
+		void settled.then(() => {
+			pending.delete(settled);
+			if (pending.size === 0 && rooms.get(key) === pending) rooms.delete(key);
+		});
+	}
+	private async awaitCleanup(code: string, uid: string) {
+		const pending = pendingCleanup.get(this.services)?.get(cleanupKey(code, uid));
+		if (!pending?.size) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const finished = await Promise.race([
+			Promise.all(pending).then(() => true),
+			new Promise<false>((resolve) => {
+				timer = setTimeout(
+					() => resolve(false),
+					FirestoreSyncAdapter.cleanupWaitMs,
+				);
+			}),
+		]);
+		clearTimeout(timer);
+		// The cleanup stays registered: a later attempt must still wait for it.
+		if (!finished)
+			throw new Error(
+				"Still finishing your previous visit to this room. Check your connection and try again.",
+			);
+	}
 	private async presence(
 		code: string,
 		name: string,
 		color: string,
 		slot: 1 | 2,
 	) {
+		const uid = this.requireUser();
 		const service = new PresenceService(
 			code,
-			this.requireUser(),
+			uid,
 			name,
 			color,
 			slot,
@@ -116,14 +165,15 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 		try {
 			await service.start();
 		} catch (error) {
-			// Never keep a failed session: a retry must not wait on its cleanup,
-			// whose RTDB writes may never be acknowledged.
+			// Never keep a failed session. Its cleanup writes the same RTDB path a
+			// retry will use, so register it for a same-room join to wait on.
 			if (this.presenceService === service) this.presenceService = null;
-			void service
+			const stopping = service
 				.stop()
 				.catch((stopError) =>
 					console.error("Failed to stop a failed presence session", stopError),
 				);
+			this.trackCleanup(code, uid, stopping);
 			throw error;
 		}
 	}
@@ -162,11 +212,15 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 				// rather than leaving this adapter attached to it.
 				this.roomCode = null;
 				this.isHost = false;
-				void updateDoc(reference, {
-					status: "finished",
-					lastActivity: serverTimestamp(),
-				}).catch((closeError) =>
-					console.error("Failed to close an abandoned room", closeError),
+				this.trackCleanup(
+					code,
+					uid,
+					updateDoc(reference, {
+						status: "finished",
+						lastActivity: serverTimestamp(),
+					}).catch((closeError) =>
+						console.error("Failed to close an abandoned room", closeError),
+					),
 				);
 				throw error;
 			}
@@ -177,13 +231,20 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 	async joinRoom(roomCode: string, options: JoinRoomOptions): Promise<Room> {
 		const uid = this.requireUser(),
 			code = roomCode.toUpperCase();
-		if (this.pendingLeave?.code === code) await this.pendingLeave.settled;
+		await this.awaitCleanup(code, uid);
+		// The session may have ended while this join waited.
+		if (this.requireUser() !== uid)
+			throw new SyncError("disconnected", "Signed in as a different player");
 		const reference = doc(this.services.db, "rooms", code);
 		let claimedSlot = false;
 		const room = await runTransaction(this.services.db, async (tx) => {
+			// Firestore may rerun this callback; only the committed run counts.
+			claimedSlot = false;
 			const snapshot = await tx.get(reference);
 			if (!snapshot.exists()) throw new Error("Room not found");
 			const room = parseRoom(snapshot.data());
+			// A host's leave or a failed creation closes the room for everyone.
+			if (room.status === "finished") throw new Error("This room has closed");
 			if (!room.playerSlots[uid]) {
 				if (room.status !== "waiting")
 					throw new Error("Game already in progress");
@@ -212,12 +273,18 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			// this attempt claimed so the room is not left full.
 			this.roomCode = null;
 			this.isHost = false;
+			// A retry waits for this release (registered cleanup), so it cannot
+			// read the stale slot and then lose it when the release lands.
 			if (claimedSlot)
-				void updateDoc(reference, {
-					[`playerSlots.${uid}`]: deleteField(),
-					lastActivity: serverTimestamp(),
-				}).catch((releaseError) =>
-					console.error("Failed to release a claimed slot", releaseError),
+				this.trackCleanup(
+					code,
+					uid,
+					updateDoc(reference, {
+						[`playerSlots.${uid}`]: deleteField(),
+						lastActivity: serverTimestamp(),
+					}).catch((releaseError) =>
+						console.error("Failed to release a claimed slot", releaseError),
+					),
 				);
 			throw error;
 		}
@@ -255,11 +322,7 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			),
 			presence?.stop(),
 		]);
-		const pending = { code, settled: cleanup };
-		this.pendingLeave = pending;
-		void cleanup.then(() => {
-			if (this.pendingLeave === pending) this.pendingLeave = null;
-		});
+		this.trackCleanup(code, uid, cleanup);
 		return cleanup.then((results) => {
 			const failure = results.find(
 				(result): result is PromiseRejectedResult =>
@@ -287,6 +350,10 @@ export class FirestoreSyncAdapter extends BaseSyncAdapter {
 			doc(this.services.db, "rooms", code),
 			(snapshot) => {
 				if (!active) return;
+				// A join reads the room in a transaction, which does not populate the
+				// local cache. Going offline before the first server snapshot then
+				// yields a cache snapshot without the document: unknown, not deleted.
+				if (!snapshot.exists() && snapshot.metadata.fromCache) return;
 				let room: Room | null;
 				try {
 					room = snapshot.exists() ? parseRoom(snapshot.data()) : null;

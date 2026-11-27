@@ -355,3 +355,18 @@ it("shows icons rather than placeholder words while connecting and after a failu
 	expect(screen.getByText("Auth unavailable")).toBeInTheDocument();
 	expect(container.textContent).not.toMatch(/\berr\b/);
 });
+
+it("tells a guest the room closed when the host leaves, and offers a way back", () => {
+	const leaveRoom = vi.fn();
+	useOnlineStore.setState({
+		isHost: false,
+		room: createTestRoom({ status: "finished" }),
+		leaveRoom,
+	});
+	render(<OnlineLobby onBack={vi.fn()} onGameStart={vi.fn()} />);
+	expect(screen.getByRole("alert")).toHaveTextContent("This room has closed");
+	expect(screen.queryByRole("button", { name: "Start Game" })).toBeNull();
+	fireEvent.click(screen.getByRole("button", { name: "Back to Online Lobby" }));
+	expect(leaveRoom).toHaveBeenCalledOnce();
+	expect(router.navigate).toHaveBeenCalledWith({ to: "/online" });
+});

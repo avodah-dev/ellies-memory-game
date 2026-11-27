@@ -41,18 +41,27 @@ const room = createTestRoom({ playerSlots: { "host-odah-id": 1, guest: 2 } });
 const permission = Object.assign(new Error("permission denied"), {
 	code: "permission-denied",
 });
-const services = {
-	getOrCreateUserId: async () => "guest",
-	db: {},
-	rtdb: {},
-} as unknown as FirebaseServices;
+// Pending cleanup is tracked per Firebase client, so each test gets its own.
+const freshServices = () =>
+	({
+		getOrCreateUserId: async () => "guest",
+		db: {},
+		rtdb: {},
+	}) as unknown as FirebaseServices;
+let services = freshServices();
 const observer = {
 	...noopSyncObserver,
 	listener: vi.fn(),
 	snapshotRaw: vi.fn(),
 };
-const snapshot = { exists: () => true, data: () => room };
+const snapshot = {
+	exists: () => true,
+	data: () => room,
+	metadata: { fromCache: false },
+};
 beforeEach(() => {
+	services = freshServices();
+	FirestoreSyncAdapter.cleanupWaitMs = 10_000;
 	vi.clearAllMocks();
 	mock.listeners.length = 0;
 	mock.update.mockReset().mockResolvedValue(undefined);
@@ -189,7 +198,11 @@ it("routes a malformed room snapshot to the error callback instead of throwing f
 	expect(roomChanged).not.toHaveBeenCalled();
 	expect(roomError).toHaveBeenCalledOnce();
 	expect(roomError.mock.calls[0][0]).toBeInstanceOf(Error);
-	mock.listeners[0].next({ exists: () => false, data: () => undefined });
+	mock.listeners[0].next({
+		exists: () => false,
+		data: () => undefined,
+		metadata: { fromCache: false },
+	});
 	expect(roomChanged).toHaveBeenCalledExactlyOnceWith(null);
 	await adapter.disconnect();
 });
@@ -358,4 +371,165 @@ it("refuses a lobby start that would replace a round in progress", async () => {
 	).rejects.toThrow("A round is already in progress");
 	expect(set).not.toHaveBeenCalled();
 	await host.disconnect();
+});
+
+function gate() {
+	let open!: () => void;
+	const promise = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	return { promise, open };
+}
+const settle = () => new Promise((r) => setTimeout(r, 10));
+const roomIn = (code: string, extra: Partial<typeof room> = {}) => ({
+	exists: () => true,
+	data: () => ({ ...room, roomCode: code, ...extra }),
+});
+function rooms(byCode: Record<string, () => unknown>) {
+	mock.transaction.mockImplementation(async (_db, action) =>
+		action({
+			get: async (path: string) => byCode[path.split("/")[1]](),
+			update: vi.fn(),
+		}),
+	);
+}
+it("keeps each room's cleanup barrier when the player leaves another room in between", async () => {
+	const adapter = await joined();
+	const slowLeave = gate();
+	mock.update.mockReturnValueOnce(slowLeave.promise);
+	void adapter.leaveRoom(); // ABCD cleanup stays pending
+	rooms({ ABCD: () => roomIn("ABCD"), WXYZ: () => roomIn("WXYZ") });
+	await adapter.joinRoom("WXYZ", { odahId: "guest", name: "G", color: "red" });
+	await adapter.leaveRoom(); // WXYZ cleanup settles at once
+	mock.transaction.mockClear();
+	const rejoining = adapter.joinRoom("ABCD", {
+		odahId: "guest",
+		name: "G",
+		color: "red",
+	});
+	await settle();
+	expect(mock.transaction).not.toHaveBeenCalled();
+	slowLeave.open();
+	await rejoining;
+	expect(mock.transaction).toHaveBeenCalledOnce();
+	await adapter.disconnect();
+});
+it("makes a retry wait for a failed join's slot release", async () => {
+	const adapter = new FirestoreSyncAdapter(services, observer);
+	await adapter.connect();
+	rooms({ ABCD: () => roomIn("ABCD", { playerSlots: { "host-odah-id": 1 } }) });
+	const release = gate();
+	mock.update.mockReturnValueOnce(release.promise);
+	mock.presenceStart.mockRejectedValueOnce(new Error("Presence connection timeout"));
+	await expect(
+		adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" }),
+	).rejects.toThrow("Presence connection timeout");
+	mock.transaction.mockClear();
+	const retry = adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" });
+	await settle();
+	// Reading membership now would see the stale claim, then lose it.
+	expect(mock.transaction).not.toHaveBeenCalled();
+	release.open();
+	await retry;
+	expect(mock.transaction).toHaveBeenCalledOnce();
+	await adapter.disconnect();
+});
+it("makes a retry wait for a failed presence session's cleanup", async () => {
+	const adapter = new FirestoreSyncAdapter(services, observer);
+	await adapter.connect();
+	rooms({ ABCD: () => roomIn("ABCD") });
+	const stopped = gate();
+	mock.presenceStop.mockReturnValueOnce(stopped.promise);
+	mock.presenceStart.mockRejectedValueOnce(new Error("Presence connection timeout"));
+	await expect(
+		adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" }),
+	).rejects.toThrow();
+	mock.transaction.mockClear();
+	const retry = adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" });
+	await settle();
+	expect(mock.transaction).not.toHaveBeenCalled();
+	stopped.open();
+	await retry;
+	expect(adapter.getRoomCode()).toBe("ABCD");
+	await adapter.disconnect();
+});
+it("gives up waiting on stuck cleanup with a clear error, and keeps the barrier", async () => {
+	const adapter = await joined();
+	FirestoreSyncAdapter.cleanupWaitMs = 20;
+	mock.update.mockReturnValueOnce(new Promise<void>(() => {}));
+	void adapter.leaveRoom();
+	mock.transaction.mockClear();
+	for (let attempt = 0; attempt < 2; attempt++)
+		await expect(
+			adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" }),
+		).rejects.toThrow("Still finishing your previous visit to this room");
+	expect(mock.transaction).not.toHaveBeenCalled();
+	await adapter.disconnect();
+});
+it("does not join after the session ends while waiting on cleanup", async () => {
+	const adapter = await joined();
+	const slowLeave = gate();
+	mock.update.mockReturnValueOnce(slowLeave.promise);
+	void adapter.leaveRoom();
+	mock.transaction.mockClear();
+	const rejoining = adapter.joinRoom("ABCD", {
+		odahId: "guest",
+		name: "G",
+		color: "red",
+	});
+	await settle();
+	await adapter.disconnect();
+	slowLeave.open();
+	await expect(rejoining).rejects.toMatchObject({ code: "disconnected" });
+	expect(mock.transaction).not.toHaveBeenCalled();
+});
+it("refuses to rejoin a closed room, even as a member", async () => {
+	const adapter = new FirestoreSyncAdapter(services, observer);
+	await adapter.connect();
+	rooms({ ABCD: () => roomIn("ABCD", { status: "finished" }) });
+	await expect(
+		adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" }),
+	).rejects.toThrow("This room has closed");
+	expect(adapter.getRoomCode()).toBeNull();
+	expect(mock.presenceStart).not.toHaveBeenCalled();
+	await adapter.disconnect();
+});
+it("decides whether a slot was claimed from the committed transaction run only", async () => {
+	const adapter = new FirestoreSyncAdapter(services, observer);
+	await adapter.connect();
+	// First run sees a free seat and claims it; Firestore reruns the callback and
+	// the committed run finds the player already a member.
+	const runs = [
+		roomIn("ABCD", { playerSlots: { "host-odah-id": 1 } }),
+		roomIn("ABCD"),
+	];
+	mock.transaction.mockImplementation(async (_db, action) => {
+		let result;
+		for (const snapshot of runs)
+			result = await action({ get: async () => snapshot, update: vi.fn() });
+		return result;
+	});
+	mock.presenceStart.mockRejectedValueOnce(new Error("Presence connection timeout"));
+	await expect(
+		adapter.joinRoom("ABCD", { odahId: "guest", name: "G", color: "red" }),
+	).rejects.toThrow();
+	// The member's existing seat must not be released.
+	expect(mock.update).not.toHaveBeenCalled();
+	await adapter.disconnect();
+});
+it("treats a missing room in a cache-only snapshot as unknown, not deleted", async () => {
+	const adapter = await joined();
+	const roomChanged = vi.fn(),
+		roomError = vi.fn();
+	adapter.subscribeToRoom("ABCD", roomChanged, roomError);
+	mock.listeners[0].next({
+		exists: () => false,
+		data: () => undefined,
+		metadata: { fromCache: true },
+	});
+	expect(roomChanged).not.toHaveBeenCalled();
+	expect(roomError).not.toHaveBeenCalled();
+	mock.listeners[0].next(snapshot);
+	expect(roomChanged).toHaveBeenCalledExactlyOnceWith(room);
+	await adapter.disconnect();
 });
